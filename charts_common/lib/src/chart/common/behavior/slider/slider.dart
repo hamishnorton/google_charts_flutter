@@ -35,9 +35,21 @@ import '../../../layout/layout_view.dart'
         ViewMeasuredSizes;
 import '../../base_chart.dart' show BaseChart, LifecycleListener;
 import '../../behavior/chart_behavior.dart' show ChartBehavior;
-import '../../processed_series.dart' show MutableSeries;
 import '../../chart_canvas.dart' show ChartCanvas, getAnimatedColor;
+import '../../processed_series.dart' show MutableSeries;
 import '../selection/selection_trigger.dart' show SelectionTrigger;
+
+/// Callback function for [Slider] drag events.
+///
+/// [point] is the current position of the slider line. [point.x] is the domain
+/// position, and [point.y] is the position of the center of the line on the
+/// measure axis.
+///
+/// [domain] is the domain value at the slider position.
+///
+/// [dragState] indicates the current state of a drag event.
+typedef SliderListenerCallback<D> = void Function(Point<int> point, D? domain,
+    String roleId, SliderListenerDragState dragState);
 
 /// Chart behavior that adds a slider widget to a chart. When the slider is
 /// dropped after drag, it will report its domain position and nearest datum
@@ -204,123 +216,77 @@ class Slider<D> implements ChartBehavior<D> {
     _sliderEventListener = SliderEventListener<D>(onChange: onChangeCallback);
   }
 
-  bool _onTapTest(Point<double> chartPoint) {
-    _delaySelect = eventTrigger == SelectionTrigger.longPressHold;
-    _handleDrag = _sliderContainsPoint(chartPoint);
-    return _handleDrag;
-  }
+  @override
+  String get role => 'Slider-$eventTrigger-$_roleId';
 
-  bool _onLongPressSelect(Point<double> chartPoint) {
-    _delaySelect = false;
-    return _onSelect(chartPoint);
-  }
-
-  bool _onSelect(Point<double> chartPoint, [double? ignored]) {
-    // Skip events that occur outside the drawArea for any series renderer.
-    // If the selection is delayed (waiting for long press), then quit early.
-    if (!_handleDrag || _delaySelect) {
-      return false;
+  @override
+  void attachTo(BaseChart<D> chart) {
+    if (chart is! CartesianChart<D>) {
+      throw ArgumentError('Slider can only be attached to a cartesian chart.');
     }
 
-    // Move the slider line along the domain axis, without adjusting the measure
-    // position.
-    final positionChanged = _moveSliderToPoint(chartPoint);
+    _chart = chart;
+
+    // Only vertical rendering is supported by this behavior.
+    assert(chart.vertical);
+
+    _view = _SliderLayoutView<D>(
+        layoutPaintOrder: layoutPaintOrder, handleRenderer: _handleRenderer);
+
+    chart.addView(_view);
+    chart.addGestureListener(_gestureListener);
+    chart.addLifecycleListener(_lifecycleListener);
+  }
+
+  /// Programmatically moves the slider to the location of [domain] on the
+  /// domain axis and iff [measure] is set moves it also to its position along
+  /// the primary measure axis.
+  ///
+  /// If [domain] exists beyond either edge of the draw area, the position will
+  /// be bound to the nearest edge of the chart. The slider's current domain
+  /// value state will reflect the domain value at the edge of the chart. For
+  /// ordinal axes, this might result in a domain value whose range band is
+  /// partially located beyond the edge of the chart.
+  ///
+  /// This does nothing if the domain matches the current domain location.
+  ///
+  /// [SliderEventListener] callbacks will be fired to indicate that the slider
+  /// has moved.
+  ///
+  /// [skipAnimation] controls whether or not the slider will animate. Animation
+  /// is disabled by default.
+  ///
+  /// [measure] controls the vertical position of the handle on the measure
+  /// axis, can only be set if the SliderHandlePosition is set to 'manual'. If
+  /// measure exists beyond the edges of the draw area, the position will be
+  /// bound to the nearest edge of the chart.
+  void moveSliderToDomain(D domain, {num? measure, bool skipAnimation = true}) {
+    // Nothing to do if we are unattached to a chart or asked to move to the
+    // current location.
+    if (_chart == null || domain == _domainValue) {
+      return;
+    }
+
+    final positionChanged = _moveSliderToDomain(domain, measure: measure);
 
     if (positionChanged) {
-      _dragStateToFireOnPostRender = SliderListenerDragState.drag;
-
-      _chart!.redraw(skipAnimation: true, skipLayout: true);
-    }
-
-    return true;
-  }
-
-  bool _onDragEnd(Point<double> chartPoint, double __, double ___) {
-    // If the selection is delayed (waiting for long press), then quit early.
-    if (_delaySelect) {
-      return false;
-    }
-
-    _handleDrag = false;
-
-    // If snapToDatum is enabled, use the x position of the nearest datum
-    // instead of the mouse point.
-    if (snapToDatum) {
-      final details = _chart!.getNearestDatumDetailPerSeries(chartPoint, true);
-      if (details.isNotEmpty && details[0].chartPosition!.x != null) {
-        // Only trigger an animating draw cycle if we need to move the slider.
-        if (_domainValue != details[0].domain) {
-          _moveSliderToDomain(details[0].domain);
-
-          // Always fire the end event to notify listeners that the gesture is
-          // over.
-          _dragStateToFireOnPostRender = SliderListenerDragState.end;
-
-          _chart!.redraw(skipAnimation: false, skipLayout: true);
-        }
-      }
-    } else {
-      // Move the slider line along the domain axis, without adjusting the
-      // measure position.
-      _moveSliderToPoint(chartPoint);
-
-      // Always fire the end event to notify listeners that the gesture is
-      // over.
       _dragStateToFireOnPostRender = SliderListenerDragState.end;
 
-      _chart!.redraw(skipAnimation: true, skipLayout: true);
+      _chart!.redraw(skipAnimation: skipAnimation, skipLayout: true);
     }
-
-    return false;
   }
 
-  bool _sliderContainsPoint(Point<double> chartPoint) {
-    return _handleBounds!.containsPoint(chartPoint);
-  }
-
-  /// Sets the drag state to "initial" when new data is drawn on the chart.
-  void _setInitialDragState(List<MutableSeries<D>> _) {
-    _dragStateToFireOnPostRender = SliderListenerDragState.initial;
-  }
-
-  void _updateViewData() {
-    _sliderHandle ??= _AnimatedSlider<D>();
-
-    // If not set in the constructor, initial position for the handle is the
-    // center of the draw area.
-    if (_domainValue == null) {
-      final newDomainValue = _chart!.domainAxis!
-          .getDomain(_view.drawBounds.left + _view.drawBounds.width / 2);
-      _domainValue = (newDomainValue is double)
-          ? (newDomainValue.round().toDouble() as D)
-          : newDomainValue;
-    }
-
-    // Possibly move the slider, if the axis values have changed since the last
-    // chart draw.
-    _moveSliderToDomain(_domainValue);
-
-    // Move the handle to the current event position.
-    final _handleBounds = this._handleBounds!;
-    final _domainCenterPoint = this._domainCenterPoint!;
-    final element = _SliderElement<D>(
-      domainCenterPoint: Point<int>(_domainCenterPoint.x, _domainCenterPoint.y),
-      buttonBounds: Rectangle<int>(_handleBounds.left, _handleBounds.top,
-          _handleBounds.width, _handleBounds.height),
-      fill: _style.fillColor,
-      stroke: _style.strokeColor,
-      strokeWidthPx: _style.strokeWidthPx,
-    );
-
-    _sliderHandle!.setNewTarget(element);
-
-    _view.sliderHandle = _sliderHandle!;
+  @override
+  void removeFrom(BaseChart<D> chart) {
+    chart.removeView(_view);
+    chart.removeGestureListener(_gestureListener);
+    chart.removeLifecycleListener(_lifecycleListener);
+    _chart = null;
   }
 
   /// Fires a [SliderListenerDragState] change event if needed.
   void _fireChangeEvent(ChartCanvas _) {
-    if (SliderListenerDragState == null ||
-        _sliderEventListener.onChange == null) {
+    if (_sliderEventListener.onChange == null) {
       return;
     }
 
@@ -350,6 +316,30 @@ class Slider<D> implements ChartBehavior<D> {
         _domainValue,
         _roleId,
         dragState);
+  }
+
+  /// Moves the slider along the domain axis to the location of [domain] and iff
+  /// [measure] is set moves it also to location of [measure] along the primary
+  /// measure axis.
+  ///
+  /// If [domain] or [measure] exists beyond either edge of the draw area, the position will
+  /// be bound to the nearest edge.
+  ///
+  /// Updates [_domainValue] with the location of [domain]. For ordinal axes,
+  /// this might result in a different domain value if the range band of
+  /// [domain] is completely outside of the viewport.
+  ///
+  /// Updates [_domainCenterPoint] and [_handleBounds] with the new position of
+  /// the slider.
+  ///
+  /// Returns whether or not the position actually changed. This will generally
+  /// be false if the mouse was dragged outside of the domain axis viewport.
+  bool _moveSliderToDomain(D? domain, {num? measure}) {
+    final x = _chart!.domainAxis!.getLocation(domain)!;
+    final y =
+        measure != null ? _chart!.getMeasureAxis().getLocation(measure)! : 0.0;
+
+    return _moveSliderToPoint(Point<double>(x, y));
   }
 
   /// Moves the slider along the domain axis (and primary measure axis if
@@ -450,98 +440,156 @@ class Slider<D> implements ChartBehavior<D> {
     return positionChanged;
   }
 
-  /// Moves the slider along the domain axis to the location of [domain] and iff
-  /// [measure] is set moves it also to location of [measure] along the primary
-  /// measure axis.
-  ///
-  /// If [domain] or [measure] exists beyond either edge of the draw area, the position will
-  /// be bound to the nearest edge.
-  ///
-  /// Updates [_domainValue] with the location of [domain]. For ordinal axes,
-  /// this might result in a different domain value if the range band of
-  /// [domain] is completely outside of the viewport.
-  ///
-  /// Updates [_domainCenterPoint] and [_handleBounds] with the new position of
-  /// the slider.
-  ///
-  /// Returns whether or not the position actually changed. This will generally
-  /// be false if the mouse was dragged outside of the domain axis viewport.
-  bool _moveSliderToDomain(D? domain, {num? measure}) {
-    final x = _chart!.domainAxis!.getLocation(domain)!;
-    final y =
-        measure != null ? _chart!.getMeasureAxis().getLocation(measure)! : 0.0;
-
-    return _moveSliderToPoint(Point<double>(x, y));
-  }
-
-  /// Programmatically moves the slider to the location of [domain] on the
-  /// domain axis and iff [measure] is set moves it also to its position along
-  /// the primary measure axis.
-  ///
-  /// If [domain] exists beyond either edge of the draw area, the position will
-  /// be bound to the nearest edge of the chart. The slider's current domain
-  /// value state will reflect the domain value at the edge of the chart. For
-  /// ordinal axes, this might result in a domain value whose range band is
-  /// partially located beyond the edge of the chart.
-  ///
-  /// This does nothing if the domain matches the current domain location.
-  ///
-  /// [SliderEventListener] callbacks will be fired to indicate that the slider
-  /// has moved.
-  ///
-  /// [skipAnimation] controls whether or not the slider will animate. Animation
-  /// is disabled by default.
-  ///
-  /// [measure] controls the vertical position of the handle on the measure
-  /// axis, can only be set if the SliderHandlePosition is set to 'manual'. If
-  /// measure exists beyond the edges of the draw area, the position will be
-  /// bound to the nearest edge of the chart.
-  void moveSliderToDomain(D domain, {num? measure, bool skipAnimation = true}) {
-    // Nothing to do if we are unattached to a chart or asked to move to the
-    // current location.
-    if (_chart == null || domain == _domainValue) {
-      return;
+  bool _onDragEnd(Point<double> chartPoint, double __, double ___) {
+    // If the selection is delayed (waiting for long press), then quit early.
+    if (_delaySelect) {
+      return false;
     }
 
-    final positionChanged = _moveSliderToDomain(domain, measure: measure);
+    _handleDrag = false;
 
-    if (positionChanged) {
+    // If snapToDatum is enabled, use the x position of the nearest datum
+    // instead of the mouse point.
+    if (snapToDatum) {
+      final details = _chart!.getNearestDatumDetailPerSeries(chartPoint, true);
+      if (details.isNotEmpty && details[0].chartPosition!.x != null) {
+        // Only trigger an animating draw cycle if we need to move the slider.
+        if (_domainValue != details[0].domain) {
+          _moveSliderToDomain(details[0].domain);
+
+          // Always fire the end event to notify listeners that the gesture is
+          // over.
+          _dragStateToFireOnPostRender = SliderListenerDragState.end;
+
+          _chart!.redraw(skipAnimation: false, skipLayout: true);
+        }
+      }
+    } else {
+      // Move the slider line along the domain axis, without adjusting the
+      // measure position.
+      _moveSliderToPoint(chartPoint);
+
+      // Always fire the end event to notify listeners that the gesture is
+      // over.
       _dragStateToFireOnPostRender = SliderListenerDragState.end;
 
-      _chart!.redraw(skipAnimation: skipAnimation, skipLayout: true);
-    }
-  }
-
-  @override
-  void attachTo(BaseChart<D> chart) {
-    if (chart is! CartesianChart<D>) {
-      throw ArgumentError('Slider can only be attached to a cartesian chart.');
+      _chart!.redraw(skipAnimation: true, skipLayout: true);
     }
 
-    _chart = chart;
-
-    // Only vertical rendering is supported by this behavior.
-    assert(chart.vertical);
-
-    _view = _SliderLayoutView<D>(
-        layoutPaintOrder: layoutPaintOrder, handleRenderer: _handleRenderer);
-
-    chart.addView(_view);
-    chart.addGestureListener(_gestureListener);
-    chart.addLifecycleListener(_lifecycleListener);
+    return false;
   }
 
-  @override
-  void removeFrom(BaseChart<D> chart) {
-    chart.removeView(_view);
-    chart.removeGestureListener(_gestureListener);
-    chart.removeLifecycleListener(_lifecycleListener);
-    _chart = null;
+  bool _onLongPressSelect(Point<double> chartPoint) {
+    _delaySelect = false;
+    return _onSelect(chartPoint);
   }
 
-  @override
-  String get role => 'Slider-$eventTrigger-$_roleId';
+  bool _onSelect(Point<double> chartPoint, [double? ignored]) {
+    // Skip events that occur outside the drawArea for any series renderer.
+    // If the selection is delayed (waiting for long press), then quit early.
+    if (!_handleDrag || _delaySelect) {
+      return false;
+    }
+
+    // Move the slider line along the domain axis, without adjusting the measure
+    // position.
+    final positionChanged = _moveSliderToPoint(chartPoint);
+
+    if (positionChanged) {
+      _dragStateToFireOnPostRender = SliderListenerDragState.drag;
+
+      _chart!.redraw(skipAnimation: true, skipLayout: true);
+    }
+
+    return true;
+  }
+
+  bool _onTapTest(Point<double> chartPoint) {
+    _delaySelect = eventTrigger == SelectionTrigger.longPressHold;
+    _handleDrag = _sliderContainsPoint(chartPoint);
+    return _handleDrag;
+  }
+
+  /// Sets the drag state to "initial" when new data is drawn on the chart.
+  void _setInitialDragState(List<MutableSeries<D>> _) {
+    _dragStateToFireOnPostRender = SliderListenerDragState.initial;
+  }
+
+  bool _sliderContainsPoint(Point<double> chartPoint) {
+    return _handleBounds!.containsPoint(chartPoint);
+  }
+
+  void _updateViewData() {
+    _sliderHandle ??= _AnimatedSlider<D>();
+
+    // If not set in the constructor, initial position for the handle is the
+    // center of the draw area.
+    if (_domainValue == null) {
+      final newDomainValue = _chart!.domainAxis!
+          .getDomain(_view.drawBounds.left + _view.drawBounds.width / 2);
+      _domainValue = (newDomainValue is double)
+          ? (newDomainValue.round().toDouble() as D)
+          : newDomainValue;
+    }
+
+    // Possibly move the slider, if the axis values have changed since the last
+    // chart draw.
+    _moveSliderToDomain(_domainValue);
+
+    // Move the handle to the current event position.
+    final _handleBounds = this._handleBounds!;
+    final _domainCenterPoint = this._domainCenterPoint!;
+    final element = _SliderElement<D>(
+      domainCenterPoint: Point<int>(_domainCenterPoint.x, _domainCenterPoint.y),
+      buttonBounds: Rectangle<int>(_handleBounds.left, _handleBounds.top,
+          _handleBounds.width, _handleBounds.height),
+      fill: _style.fillColor,
+      stroke: _style.strokeColor,
+      strokeWidthPx: _style.strokeWidthPx,
+    );
+
+    _sliderHandle!.setNewTarget(element);
+
+    _view.sliderHandle = _sliderHandle!;
+  }
 }
+
+/// Event handler for slider events.
+class SliderEventListener<D> {
+  /// Called when the position of the slider has changed during a drag event.
+  final SliderListenerCallback<D>? onChange;
+
+  SliderEventListener({this.onChange});
+}
+
+/// Describes the vertical position of the slider handle on the slider.
+///
+/// [middle] indicates the handle should be half-way between the top and bottom
+/// of the chart in the middle of the slider line.
+///
+/// [top] indicates the slider should be rendered relative to the top of the
+/// chart.
+///
+/// [manual] indicates that the slider vertical position can be set every
+/// time the slider moves by calling moveSliderToDomain.
+enum SliderHandlePosition { middle, top, manual }
+
+/// Describes the current state of a slider change as a result of a drag event.
+///
+/// [initial] indicates that the slider was set to an initial position when new
+/// data was drawn on a chart. This will be fired if an initialDomainValue is
+/// passed to [Slider]. It will also be fired if the position of the slider
+/// changes as a result of new data being drawn on the chart.
+///
+/// [drag] indicates that the slider is being moved as a result of drag events.
+/// When this is passed, the drag event is still active. Once the drag event is
+/// completed, an [end] event will be fired.
+///
+/// [end] indicates that a drag event has been completed. This usually occurs
+/// after one or more [drag] events. An [end] event will also be fired if
+/// [Slider.moveSliderToDomain] is called, but there will be no preceding [drag]
+/// events in this case.
+enum SliderListenerDragState { initial, drag, end }
 
 /// Style configuration for a [Slider] behavior.
 class SliderStyle {
@@ -577,16 +625,6 @@ class SliderStyle {
         strokeColor = strokeColor ?? StyleFactory.style.sliderStrokeColor;
 
   @override
-  bool operator ==(Object other) {
-    return other is SliderStyle &&
-        fillColor == other.fillColor &&
-        handleOffset == other.handleOffset &&
-        handleSize == other.handleSize &&
-        strokeWidthPx == other.strokeWidthPx &&
-        strokeColor == other.strokeColor;
-  }
-
-  @override
   int get hashCode {
     var hashcode = fillColor.hashCode;
     hashcode = (hashcode * 37) + handleOffset.hashCode;
@@ -596,83 +634,96 @@ class SliderStyle {
     hashcode = (hashcode * 37) + handlePosition.hashCode;
     return hashcode;
   }
+
+  @override
+  bool operator ==(Object other) {
+    return other is SliderStyle &&
+        fillColor == other.fillColor &&
+        handleOffset == other.handleOffset &&
+        handleSize == other.handleSize &&
+        strokeWidthPx == other.strokeWidthPx &&
+        strokeColor == other.strokeColor;
+  }
 }
 
-/// Describes the vertical position of the slider handle on the slider.
-///
-/// [middle] indicates the handle should be half-way between the top and bottom
-/// of the chart in the middle of the slider line.
-///
-/// [top] indicates the slider should be rendered relative to the top of the
-/// chart.
-///
-/// [manual] indicates that the slider vertical position can be set every
-/// time the slider moves by calling moveSliderToDomain.
-enum SliderHandlePosition { middle, top, manual }
+/// Helper class that exposes fewer private internal properties for unit tests.
+@visibleForTesting
+class SliderTester<D> {
+  final Slider<D> behavior;
 
-/// Layout view component for [Slider].
-class _SliderLayoutView<D> extends LayoutView {
-  @override
-  final LayoutViewConfig layoutConfig;
+  SliderTester(this.behavior);
 
-  late Rectangle<int> _drawAreaBounds;
+  Point<int>? get domainCenterPoint => behavior._domainCenterPoint;
 
-  Rectangle<int> get drawBounds => _drawAreaBounds;
+  D? get domainValue => behavior._domainValue;
 
-  @override
-  GraphicsFactory? graphicsFactory;
+  Rectangle<int>? get handleBounds => behavior._handleBounds;
 
-  /// Renderer for the handle. Defaults to a rectangle.
-  final SymbolRenderer _handleRenderer;
+  _SliderLayoutView<D> get view => behavior._view;
 
-  /// Rendering data for the slider line and handle.
-  _AnimatedSlider<D>? _sliderHandle;
-
-  _SliderLayoutView(
-      {required int layoutPaintOrder, required SymbolRenderer handleRenderer})
-      : layoutConfig = LayoutViewConfig(
-            paintOrder: layoutPaintOrder,
-            position: LayoutPosition.DrawArea,
-            positionOrder: LayoutViewPositionOrder.drawArea),
-        _handleRenderer = handleRenderer;
-
-  set sliderHandle(_AnimatedSlider<D> value) {
-    _sliderHandle = value;
-  }
-
-  @override
-  ViewMeasuredSizes? measure(int maxWidth, int maxHeight) {
-    return null;
-  }
-
-  @override
   void layout(Rectangle<int> componentBounds, Rectangle<int> drawAreaBounds) {
-    _drawAreaBounds = drawAreaBounds;
+    behavior._view.layout(componentBounds, drawAreaBounds);
+  }
+}
+
+/// Animates the slider control element of the behavior between different
+/// states.
+class _AnimatedSlider<D> {
+  _SliderElement<D>? _previousSlider;
+  late _SliderElement<D> _targetSlider;
+  _SliderElement<D>? _currentSlider;
+
+  // Flag indicating whether this point is being animated out of the chart.
+  bool animatingOut = false;
+
+  _AnimatedSlider();
+
+  /// Animates a point that was removed from the series out of the view.
+  ///
+  /// This should be called in place of "setNewTarget" for points that represent
+  /// data that has been removed from the series.
+  ///
+  /// Animates the width of the slider down to 0.
+  void animateOut() {
+    final newTarget = _currentSlider!.clone();
+
+    // Animate the button bounds inwards horizontally towards a 0 width box.
+    final targetBounds = newTarget.buttonBounds;
+    final top = targetBounds.top;
+    final right = targetBounds.left + targetBounds.width / 2;
+    final bottom = targetBounds.bottom;
+    final left = right;
+
+    newTarget.buttonBounds = Rectangle<int>(left.round(), top.round(),
+        (right - left).round(), (bottom - top).round());
+
+    // Animate the stroke width to 0 so that we don't get a lingering line after
+    // animation is done.
+    newTarget.strokeWidthPx = 0.0;
+
+    setNewTarget(newTarget);
+    animatingOut = true;
   }
 
-  @override
-  void paint(ChartCanvas canvas, double animationPercent) {
-    final sliderElement = _sliderHandle!.getCurrentSlider(animationPercent);
+  _SliderElement<D> getCurrentSlider(double animationPercent) {
+    if (animationPercent == 1.0 || _previousSlider == null) {
+      _currentSlider = _targetSlider;
+      _previousSlider = _targetSlider;
+      return _currentSlider!;
+    }
 
-    canvas.drawLine(
-        points: [
-          Point<num>(sliderElement.domainCenterPoint.x, _drawAreaBounds.top),
-          Point<num>(sliderElement.domainCenterPoint.x, _drawAreaBounds.bottom),
-        ],
-        stroke: sliderElement.stroke,
-        strokeWidthPx: sliderElement.strokeWidthPx);
+    _currentSlider!.updateAnimationPercent(
+        _previousSlider!, _targetSlider, animationPercent);
 
-    _handleRenderer.paint(canvas, sliderElement.buttonBounds,
-        fillColor: sliderElement.fill,
-        strokeColor: sliderElement.stroke,
-        strokeWidthPx: sliderElement.strokeWidthPx);
+    return _currentSlider!;
   }
 
-  @override
-  Rectangle<int> get componentBounds => _drawAreaBounds;
-
-  @override
-  bool get isSeriesRenderer => false;
+  void setNewTarget(_SliderElement<D> newTarget) {
+    animatingOut = false;
+    _currentSlider ??= newTarget.clone();
+    _previousSlider = _currentSlider!.clone();
+    _targetSlider = newTarget;
+  }
 }
 
 /// Rendering information for a slider control element.
@@ -742,119 +793,67 @@ class _SliderElement<D> {
   }
 }
 
-/// Animates the slider control element of the behavior between different
-/// states.
-class _AnimatedSlider<D> {
-  _SliderElement<D>? _previousSlider;
-  late _SliderElement<D> _targetSlider;
-  _SliderElement<D>? _currentSlider;
+/// Layout view component for [Slider].
+class _SliderLayoutView<D> extends LayoutView {
+  @override
+  final LayoutViewConfig layoutConfig;
 
-  // Flag indicating whether this point is being animated out of the chart.
-  bool animatingOut = false;
+  late Rectangle<int> _drawAreaBounds;
 
-  _AnimatedSlider();
+  @override
+  GraphicsFactory? graphicsFactory;
 
-  /// Animates a point that was removed from the series out of the view.
-  ///
-  /// This should be called in place of "setNewTarget" for points that represent
-  /// data that has been removed from the series.
-  ///
-  /// Animates the width of the slider down to 0.
-  void animateOut() {
-    final newTarget = _currentSlider!.clone();
+  /// Renderer for the handle. Defaults to a rectangle.
+  final SymbolRenderer _handleRenderer;
 
-    // Animate the button bounds inwards horizontally towards a 0 width box.
-    final targetBounds = newTarget.buttonBounds;
-    final top = targetBounds.top;
-    final right = targetBounds.left + targetBounds.width / 2;
-    final bottom = targetBounds.bottom;
-    final left = right;
+  /// Rendering data for the slider line and handle.
+  _AnimatedSlider<D>? _sliderHandle;
 
-    newTarget.buttonBounds = Rectangle<int>(left.round(), top.round(),
-        (right - left).round(), (bottom - top).round());
+  _SliderLayoutView(
+      {required int layoutPaintOrder, required SymbolRenderer handleRenderer})
+      : layoutConfig = LayoutViewConfig(
+            paintOrder: layoutPaintOrder,
+            position: LayoutPosition.DrawArea,
+            positionOrder: LayoutViewPositionOrder.drawArea),
+        _handleRenderer = handleRenderer;
 
-    // Animate the stroke width to 0 so that we don't get a lingering line after
-    // animation is done.
-    newTarget.strokeWidthPx = 0.0;
+  @override
+  Rectangle<int> get componentBounds => _drawAreaBounds;
 
-    setNewTarget(newTarget);
-    animatingOut = true;
+  Rectangle<int> get drawBounds => _drawAreaBounds;
+
+  @override
+  bool get isSeriesRenderer => false;
+
+  set sliderHandle(_AnimatedSlider<D> value) {
+    _sliderHandle = value;
   }
 
-  void setNewTarget(_SliderElement<D> newTarget) {
-    animatingOut = false;
-    _currentSlider ??= newTarget.clone();
-    _previousSlider = _currentSlider!.clone();
-    _targetSlider = newTarget;
-  }
-
-  _SliderElement<D> getCurrentSlider(double animationPercent) {
-    if (animationPercent == 1.0 || _previousSlider == null) {
-      _currentSlider = _targetSlider;
-      _previousSlider = _targetSlider;
-      return _currentSlider!;
-    }
-
-    _currentSlider!.updateAnimationPercent(
-        _previousSlider!, _targetSlider, animationPercent);
-
-    return _currentSlider!;
-  }
-}
-
-/// Event handler for slider events.
-class SliderEventListener<D> {
-  /// Called when the position of the slider has changed during a drag event.
-  final SliderListenerCallback<D>? onChange;
-
-  SliderEventListener({this.onChange});
-}
-
-/// Callback function for [Slider] drag events.
-///
-/// [point] is the current position of the slider line. [point.x] is the domain
-/// position, and [point.y] is the position of the center of the line on the
-/// measure axis.
-///
-/// [domain] is the domain value at the slider position.
-///
-/// [dragState] indicates the current state of a drag event.
-typedef SliderListenerCallback<D> = void Function(Point<int> point, D? domain,
-    String roleId, SliderListenerDragState dragState);
-
-/// Describes the current state of a slider change as a result of a drag event.
-///
-/// [initial] indicates that the slider was set to an initial position when new
-/// data was drawn on a chart. This will be fired if an initialDomainValue is
-/// passed to [Slider]. It will also be fired if the position of the slider
-/// changes as a result of new data being drawn on the chart.
-///
-/// [drag] indicates that the slider is being moved as a result of drag events.
-/// When this is passed, the drag event is still active. Once the drag event is
-/// completed, an [end] event will be fired.
-///
-/// [end] indicates that a drag event has been completed. This usually occurs
-/// after one or more [drag] events. An [end] event will also be fired if
-/// [Slider.moveSliderToDomain] is called, but there will be no preceding [drag]
-/// events in this case.
-enum SliderListenerDragState { initial, drag, end }
-
-/// Helper class that exposes fewer private internal properties for unit tests.
-@visibleForTesting
-class SliderTester<D> {
-  final Slider<D> behavior;
-
-  SliderTester(this.behavior);
-
-  Point<int>? get domainCenterPoint => behavior._domainCenterPoint;
-
-  D? get domainValue => behavior._domainValue;
-
-  Rectangle<int>? get handleBounds => behavior._handleBounds;
-
+  @override
   void layout(Rectangle<int> componentBounds, Rectangle<int> drawAreaBounds) {
-    behavior._view.layout(componentBounds, drawAreaBounds);
+    _drawAreaBounds = drawAreaBounds;
   }
 
-  _SliderLayoutView<D> get view => behavior._view;
+  @override
+  ViewMeasuredSizes? measure(int maxWidth, int maxHeight) {
+    return null;
+  }
+
+  @override
+  void paint(ChartCanvas canvas, double animationPercent) {
+    final sliderElement = _sliderHandle!.getCurrentSlider(animationPercent);
+
+    canvas.drawLine(
+        points: [
+          Point<num>(sliderElement.domainCenterPoint.x, _drawAreaBounds.top),
+          Point<num>(sliderElement.domainCenterPoint.x, _drawAreaBounds.bottom),
+        ],
+        stroke: sliderElement.stroke,
+        strokeWidthPx: sliderElement.strokeWidthPx);
+
+    _handleRenderer.paint(canvas, sliderElement.buttonBounds,
+        fillColor: sliderElement.fill,
+        strokeColor: sliderElement.stroke,
+        strokeWidthPx: sliderElement.strokeWidthPx);
+  }
 }
