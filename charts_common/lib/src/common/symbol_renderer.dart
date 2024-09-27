@@ -26,62 +26,20 @@ abstract class BaseSymbolRenderer {
   bool shouldRepaint(covariant BaseSymbolRenderer oldRenderer);
 }
 
-/// Strategy for rendering a symbol bounded within a box.
-abstract class SymbolRenderer extends BaseSymbolRenderer {
-  /// Whether the symbol should be rendered as a solid shape, or a hollow shape.
-  ///
-  /// If this is true, then fillColor and strokeColor will be used to fill in
-  /// the shape, and draw a border, respectively. The stroke (border) will only
-  /// be visible if a non-zero strokeWidthPx is configured.
-  ///
-  /// If this is false, then the shape will be filled in with a white color
-  /// (overriding fillColor). strokeWidthPx will default to 2 if none was
-  /// configured.
-  final bool isSolid;
+/// Circle symbol renderer.
+class CircleSymbolRenderer extends SymbolRenderer {
+  CircleSymbolRenderer({bool isSolid = true}) : super(isSolid: isSolid);
 
-  SymbolRenderer({required this.isSolid});
-
-  void paint(ChartCanvas canvas, Rectangle<num> bounds,
-      {List<int>? dashPattern,
-      Color? fillColor,
-      FillPatternType? fillPattern,
-      Color? strokeColor,
-      double? strokeWidthPx});
-
-  @protected
-  double? getSolidStrokeWidthPx(double? strokeWidthPx) {
-    return isSolid ? strokeWidthPx : (strokeWidthPx ?? 2.0);
-  }
-
-  @protected
-  Color? getSolidFillColor(Color? fillColor) {
-    return isSolid ? fillColor : StyleFactory.style.white;
+  @override
+  int get hashCode {
+    var hashcode = super.hashCode;
+    hashcode = (hashcode * 37) + runtimeType.hashCode;
+    return hashcode;
   }
 
   @override
-  bool operator ==(Object other) {
-    return other is SymbolRenderer && other.isSolid == isSolid;
-  }
-
-  @override
-  int get hashCode => isSolid.hashCode;
-}
-
-/// Strategy for rendering a symbol centered around a point.
-///
-/// An optional second point can describe an extended symbol.
-abstract class PointSymbolRenderer extends BaseSymbolRenderer {
-  void paint(ChartCanvas canvas, Point<double> p1, double radius,
-      {required Point<double> p2, Color? fillColor, Color? strokeColor});
-}
-
-/// Rounded rectangular symbol with corners having [radius].
-class RoundedRectSymbolRenderer extends SymbolRenderer {
-  final double radius;
-
-  RoundedRectSymbolRenderer({bool isSolid = true, double? radius})
-      : radius = radius ?? 1.0,
-        super(isSolid: isSolid);
+  bool operator ==(Object other) =>
+      other is CircleSymbolRenderer && super == other;
 
   @override
   void paint(ChartCanvas canvas, Rectangle<num> bounds,
@@ -90,34 +48,54 @@ class RoundedRectSymbolRenderer extends SymbolRenderer {
       FillPatternType? fillPattern,
       Color? strokeColor,
       double? strokeWidthPx}) {
-    canvas.drawRRect(bounds,
-        fill: getSolidFillColor(fillColor),
-        fillPattern: fillPattern,
-        stroke: strokeColor,
+    final center = Point(
+      bounds.left + (bounds.width / 2),
+      bounds.top + (bounds.height / 2),
+    );
+    final radius = min(bounds.width, bounds.height) / 2;
+    canvas.drawPoint(
+        point: center,
         radius: radius,
-        roundTopLeft: true,
-        roundTopRight: true,
-        roundBottomRight: true,
-        roundBottomLeft: true);
+        fill: getSolidFillColor(fillColor),
+        stroke: strokeColor,
+        strokeWidthPx: getSolidStrokeWidthPx(strokeWidthPx));
   }
 
   @override
-  bool shouldRepaint(RoundedRectSymbolRenderer oldRenderer) {
+  bool shouldRepaint(CircleSymbolRenderer oldRenderer) {
     return this != oldRenderer;
   }
+}
+
+/// Draws a cylindrical shape connecting two points.
+class CylinderSymbolRenderer extends PointSymbolRenderer {
+  CylinderSymbolRenderer();
 
   @override
-  bool operator ==(Object other) {
-    return other is RoundedRectSymbolRenderer &&
-        other.radius == radius &&
-        super == other;
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  bool operator ==(Object other) => other is CylinderSymbolRenderer;
+
+  @override
+  void paint(ChartCanvas canvas, Point<double> p1, double radius,
+      {required Point<double> p2,
+      Color? fillColor,
+      Color? strokeColor,
+      double? strokeWidthPx}) {
+    final adjustedP1 = Point<double>(p1.x, p1.y);
+    final adjustedP2 = Point<double>(p2.x, p2.y);
+
+    canvas.drawLine(
+        points: [adjustedP1, adjustedP2],
+        stroke: strokeColor,
+        roundEndCaps: true,
+        strokeWidthPx: radius * 2);
   }
 
   @override
-  int get hashCode {
-    var hashcode = super.hashCode;
-    hashcode = (hashcode * 37) + radius.hashCode;
-    return hashcode;
+  bool shouldRepaint(CylinderSymbolRenderer oldRenderer) {
+    return this != oldRenderer;
   }
 }
 
@@ -139,6 +117,20 @@ class LineSymbolRenderer extends SymbolRenderer {
       : strokeWidth = strokeWidth ?? strokeWidthForRoundEndCaps,
         _dashPattern = dashPattern,
         super(isSolid: isSolid);
+
+  @override
+  int get hashCode {
+    var hashcode = super.hashCode;
+    hashcode = (hashcode * 37) + strokeWidth.hashCode;
+    return hashcode;
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is LineSymbolRenderer &&
+        other.strokeWidth == strokeWidth &&
+        super == other;
+  }
 
   @override
   void paint(ChartCanvas canvas, Rectangle<num> bounds,
@@ -188,54 +180,51 @@ class LineSymbolRenderer extends SymbolRenderer {
   bool shouldRepaint(LineSymbolRenderer oldRenderer) {
     return this != oldRenderer;
   }
+}
+
+/// Strategy for rendering a symbol centered around a point.
+///
+/// An optional second point can describe an extended symbol.
+abstract class PointSymbolRenderer extends BaseSymbolRenderer {
+  void paint(ChartCanvas canvas, Point<double> p1, double radius,
+      {required Point<double> p2, Color? fillColor, Color? strokeColor});
+}
+
+/// Draws a rectangular shape connecting two points.
+class RectangleRangeSymbolRenderer extends PointSymbolRenderer {
+  RectangleRangeSymbolRenderer();
 
   @override
-  bool operator ==(Object other) {
-    return other is LineSymbolRenderer &&
-        other.strokeWidth == strokeWidth &&
-        super == other;
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  bool operator ==(Object other) => other is RectangleRangeSymbolRenderer;
+
+  @override
+  void paint(ChartCanvas canvas, Point<double> p1, double radius,
+      {required Point<double> p2,
+      Color? fillColor,
+      Color? strokeColor,
+      double? strokeWidthPx}) {
+    final adjustedP1 = Point<double>(p1.x, p1.y);
+    final adjustedP2 = Point<double>(p2.x, p2.y);
+
+    canvas.drawLine(
+        points: [adjustedP1, adjustedP2],
+        stroke: strokeColor,
+        roundEndCaps: false,
+        strokeWidthPx: radius * 2);
   }
 
   @override
-  int get hashCode {
-    var hashcode = super.hashCode;
-    hashcode = (hashcode * 37) + strokeWidth.hashCode;
-    return hashcode;
+  bool shouldRepaint(RectangleRangeSymbolRenderer oldRenderer) {
+    return this != oldRenderer;
   }
 }
 
-/// Circle symbol renderer.
-class CircleSymbolRenderer extends SymbolRenderer {
-  CircleSymbolRenderer({bool isSolid = true}) : super(isSolid: isSolid);
-
-  @override
-  void paint(ChartCanvas canvas, Rectangle<num> bounds,
-      {List<int>? dashPattern,
-      Color? fillColor,
-      FillPatternType? fillPattern,
-      Color? strokeColor,
-      double? strokeWidthPx}) {
-    final center = Point(
-      bounds.left + (bounds.width / 2),
-      bounds.top + (bounds.height / 2),
-    );
-    final radius = min(bounds.width, bounds.height) / 2;
-    canvas.drawPoint(
-        point: center,
-        radius: radius,
-        fill: getSolidFillColor(fillColor),
-        stroke: strokeColor,
-        strokeWidthPx: getSolidStrokeWidthPx(strokeWidthPx));
-  }
-
-  @override
-  bool shouldRepaint(CircleSymbolRenderer oldRenderer) {
-    return this != oldRenderer;
-  }
-
-  @override
-  bool operator ==(Object other) =>
-      other is CircleSymbolRenderer && super == other;
+/// Rectangle symbol renderer.
+class RectSymbolRenderer extends SymbolRenderer {
+  RectSymbolRenderer({bool isSolid = true}) : super(isSolid: isSolid);
 
   @override
   int get hashCode {
@@ -243,11 +232,10 @@ class CircleSymbolRenderer extends SymbolRenderer {
     hashcode = (hashcode * 37) + runtimeType.hashCode;
     return hashcode;
   }
-}
 
-/// Rectangle symbol renderer.
-class RectSymbolRenderer extends SymbolRenderer {
-  RectSymbolRenderer({bool isSolid = true}) : super(isSolid: isSolid);
+  @override
+  bool operator ==(Object other) =>
+      other is RectSymbolRenderer && super == other;
 
   @override
   void paint(ChartCanvas canvas, Rectangle<num> bounds,
@@ -266,22 +254,103 @@ class RectSymbolRenderer extends SymbolRenderer {
   bool shouldRepaint(RectSymbolRenderer oldRenderer) {
     return this != oldRenderer;
   }
+}
 
-  @override
-  bool operator ==(Object other) =>
-      other is RectSymbolRenderer && super == other;
+/// Rounded rectangular symbol with corners having [radius].
+class RoundedRectSymbolRenderer extends SymbolRenderer {
+  final double radius;
+
+  RoundedRectSymbolRenderer({bool isSolid = true, double? radius})
+      : radius = radius ?? 1.0,
+        super(isSolid: isSolid);
 
   @override
   int get hashCode {
     var hashcode = super.hashCode;
-    hashcode = (hashcode * 37) + runtimeType.hashCode;
+    hashcode = (hashcode * 37) + radius.hashCode;
     return hashcode;
   }
+
+  @override
+  bool operator ==(Object other) {
+    return other is RoundedRectSymbolRenderer &&
+        other.radius == radius &&
+        super == other;
+  }
+
+  @override
+  void paint(ChartCanvas canvas, Rectangle<num> bounds,
+      {List<int>? dashPattern,
+      Color? fillColor,
+      FillPatternType? fillPattern,
+      Color? strokeColor,
+      double? strokeWidthPx}) {
+    canvas.drawRRect(bounds,
+        fill: getSolidFillColor(fillColor),
+        fillPattern: fillPattern,
+        stroke: strokeColor,
+        radius: radius,
+        roundTopLeft: true,
+        roundTopRight: true,
+        roundBottomRight: true,
+        roundBottomLeft: true);
+  }
+
+  @override
+  bool shouldRepaint(RoundedRectSymbolRenderer oldRenderer) {
+    return this != oldRenderer;
+  }
+}
+
+/// Strategy for rendering a symbol bounded within a box.
+abstract class SymbolRenderer extends BaseSymbolRenderer {
+  /// Whether the symbol should be rendered as a solid shape, or a hollow shape.
+  ///
+  /// If this is true, then fillColor and strokeColor will be used to fill in
+  /// the shape, and draw a border, respectively. The stroke (border) will only
+  /// be visible if a non-zero strokeWidthPx is configured.
+  ///
+  /// If this is false, then the shape will be filled in with a white color
+  /// (overriding fillColor). strokeWidthPx will default to 2 if none was
+  /// configured.
+  final bool isSolid;
+
+  SymbolRenderer({required this.isSolid});
+
+  @override
+  int get hashCode => isSolid.hashCode;
+
+  @override
+  bool operator ==(Object other) {
+    return other is SymbolRenderer && other.isSolid == isSolid;
+  }
+
+  @protected
+  Color? getSolidFillColor(Color? fillColor) {
+    return isSolid ? fillColor : StyleFactory.style.white;
+  }
+
+  @protected
+  double? getSolidStrokeWidthPx(double? strokeWidthPx) {
+    return isSolid ? strokeWidthPx : (strokeWidthPx ?? 2.0);
+  }
+
+  void paint(ChartCanvas canvas, Rectangle<num> bounds,
+      {List<int>? dashPattern,
+      Color? fillColor,
+      FillPatternType? fillPattern,
+      Color? strokeColor,
+      double? strokeWidthPx});
 }
 
 /// This [SymbolRenderer] renders an upward pointing equilateral triangle.
 class TriangleSymbolRenderer extends SymbolRenderer {
   TriangleSymbolRenderer({bool isSolid = true}) : super(isSolid: isSolid);
+
+  @override
+  // ignore: hash_and_equals
+  bool operator ==(Object other) =>
+      other is TriangleSymbolRenderer && super == other;
 
   @override
   void paint(ChartCanvas canvas, Rectangle<num> bounds,
@@ -311,89 +380,4 @@ class TriangleSymbolRenderer extends SymbolRenderer {
   bool shouldRepaint(TriangleSymbolRenderer oldRenderer) {
     return this != oldRenderer;
   }
-
-  @override
-  // ignore: hash_and_equals
-  bool operator ==(Object other) =>
-      other is TriangleSymbolRenderer && super == other;
-}
-
-/// Draws a cylindrical shape connecting two points.
-class CylinderSymbolRenderer extends PointSymbolRenderer {
-  CylinderSymbolRenderer();
-
-  @override
-  void paint(ChartCanvas canvas, Point<double> p1, double radius,
-      {required Point<double> p2,
-      Color? fillColor,
-      Color? strokeColor,
-      double? strokeWidthPx}) {
-    if (p1 == null) {
-      throw ArgumentError('Invalid point p1 "${p1}"');
-    }
-
-    if (p2 == null) {
-      throw ArgumentError('Invalid point p2 "${p2}"');
-    }
-
-    final adjustedP1 = Point<double>(p1.x, p1.y);
-    final adjustedP2 = Point<double>(p2.x, p2.y);
-
-    canvas.drawLine(
-        points: [adjustedP1, adjustedP2],
-        stroke: strokeColor,
-        roundEndCaps: true,
-        strokeWidthPx: radius * 2);
-  }
-
-  @override
-  bool shouldRepaint(CylinderSymbolRenderer oldRenderer) {
-    return this != oldRenderer;
-  }
-
-  @override
-  bool operator ==(Object other) => other is CylinderSymbolRenderer;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-}
-
-/// Draws a rectangular shape connecting two points.
-class RectangleRangeSymbolRenderer extends PointSymbolRenderer {
-  RectangleRangeSymbolRenderer();
-
-  @override
-  void paint(ChartCanvas canvas, Point<double> p1, double radius,
-      {required Point<double> p2,
-      Color? fillColor,
-      Color? strokeColor,
-      double? strokeWidthPx}) {
-    if (p1 == null) {
-      throw ArgumentError('Invalid point p1 "${p1}"');
-    }
-
-    if (p2 == null) {
-      throw ArgumentError('Invalid point p2 "${p2}"');
-    }
-
-    final adjustedP1 = Point<double>(p1.x, p1.y);
-    final adjustedP2 = Point<double>(p2.x, p2.y);
-
-    canvas.drawLine(
-        points: [adjustedP1, adjustedP2],
-        stroke: strokeColor,
-        roundEndCaps: false,
-        strokeWidthPx: radius * 2);
-  }
-
-  @override
-  bool shouldRepaint(RectangleRangeSymbolRenderer oldRenderer) {
-    return this != oldRenderer;
-  }
-
-  @override
-  bool operator ==(Object other) => other is RectangleRangeSymbolRenderer;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
 }
