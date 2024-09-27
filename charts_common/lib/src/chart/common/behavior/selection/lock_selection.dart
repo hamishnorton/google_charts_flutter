@@ -55,43 +55,8 @@ class LockSelection<D> implements ChartBehavior<D> {
     }
   }
 
-  bool _onTapTest(Point<double> chartPoint) {
-    // If the tap is within the drawArea, then claim the event from others.
-    return _chart!.pointWithinRenderer(chartPoint);
-  }
-
-  bool _onSelect(Point<double> chartPoint, [double? ignored]) {
-    // Skip events that occur outside the drawArea for any series renderer.
-    if (!_chart!.pointWithinRenderer(chartPoint)) {
-      return false;
-    }
-
-    final selectionModel = _chart!.getSelectionModel(selectionModelType);
-
-    // Do nothing if the chart has no selection model.
-    if (selectionModel == null) {
-      return false;
-    }
-
-    // Do not lock the selection model if there is no selection. Locking nothing
-    // would result in a very confusing user interface as the user tries to
-    // interact with content on the chart.
-    if (!selectionModel.locked && !selectionModel.hasAnySelection) {
-      return false;
-    }
-
-    // Toggle the lock state.
-    selectionModel.locked = !selectionModel.locked;
-
-    // If the model was just unlocked, clear the selection to dismiss any stale
-    // behavior elements. A new hovercard/etc. will appear after the user
-    // triggers a new gesture.
-    if (!selectionModel.locked) {
-      selectionModel.clearSelection();
-    }
-
-    return false;
-  }
+  @override
+  String get role => 'LockSelection-$selectionModelType';
 
   @override
   void attachTo(BaseChart<D> chart) {
@@ -120,6 +85,36 @@ class LockSelection<D> implements ChartBehavior<D> {
     _chart = null;
   }
 
-  @override
-  String get role => 'LockSelection-$selectionModelType';
+  bool _onSelect(Point<double> chartPoint, [double? ignored]) {
+    // Skip events that occur outside the drawArea for any series renderer.
+    if (!_chart!.pointWithinRenderer(chartPoint)) {
+      return false;
+    }
+
+    final selectionModel = _chart!.getSelectionModel(selectionModelType);
+
+    // Do not lock the selection model if there is no selection. Locking nothing
+    // would result in a very confusing user interface as the user tries to
+    // interact with content on the chart.
+    if (!selectionModel.locked && !selectionModel.hasAnySelection) {
+      return false;
+    }
+
+    // Toggle the lock state.
+    selectionModel.locked = !selectionModel.locked;
+
+    // If the model was just unlocked, clear the selection to dismiss any stale
+    // behavior elements. A new hovercard/etc. will appear after the user
+    // triggers a new gesture.
+    if (!selectionModel.locked) {
+      selectionModel.clearSelection();
+    }
+
+    return false;
+  }
+
+  bool _onTapTest(Point<double> chartPoint) {
+    // If the tap is within the drawArea, then claim the event from others.
+    return _chart!.pointWithinRenderer(chartPoint);
+  }
 }
