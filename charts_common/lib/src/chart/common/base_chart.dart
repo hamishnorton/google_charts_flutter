@@ -37,6 +37,13 @@ import 'series_renderer.dart' show SeriesRenderer, rendererIdKey, rendererKey;
 
 typedef BehaviorCreator = ChartBehavior<D> Function<D>();
 
+typedef LifecycleCanvasCallback = void Function(ChartCanvas canvas);
+
+typedef LifecycleEmptyCallback = void Function();
+
+typedef LifecycleSeriesListCallback<D> = void Function(
+    List<MutableSeries<D>> seriesList);
+
 abstract class BaseChart<D> {
   late ChartContext context;
 
@@ -79,15 +86,70 @@ abstract class BaseChart<D> {
 
   final _behaviorTappableMap = <String, ChartBehavior<D>>{};
 
+  final _gestureProxy = ProxyGestureListener();
+
+  final _selectionModels = <SelectionModelType, MutableSelectionModel<D>>{};
+
+  final _lifecycleListeners = <LifecycleListener<D>>[];
+
+  bool _chartIsDirty = false;
+
+  BaseChart({LayoutConfig? layoutConfig})
+      : _layoutManager = LayoutManagerImpl(config: layoutConfig);
+
+  bool get animatingThisDraw =>
+      transition.inMilliseconds > 0 && !_animationsTemporarilyDisabled;
+
+  /// Returns a list of behaviors that have been added.
+  List<ChartBehavior<D>> get behaviors => List.unmodifiable(_behaviorStack);
+
+  int? get chartHeight => _chartHeight;
+
+  /// If the chart configuration has changed and requires a redraw.
+  bool get chartIsDirty => _chartIsDirty;
+
+  int? get chartWidth => _chartWidth;
+
+  List<MutableSeries<D>> get currentSeriesList => _currentSeriesList!;
+
+  SeriesRenderer<D> get defaultRenderer =>
+      getSeriesRenderer(SeriesRenderer.defaultRendererId);
+
+  //
+  // Renderer methods
+  //
+
+  set defaultRenderer(SeriesRenderer<D> renderer) {
+    renderer.rendererId = SeriesRenderer.defaultRendererId;
+    addSeriesRenderer(renderer);
+  }
+
+  /// Returns the combined bounds of the chart draw area and all layout
+  /// components that draw series data.
+  Rectangle<int> get drawableLayoutAreaBounds =>
+      _layoutManager.drawableLayoutAreaBounds;
+
+  /// Returns the bounds of the chart draw area.
+  Rectangle<int> get drawAreaBounds => _layoutManager.drawAreaBounds;
+
+  //
+  // Gesture proxy methods
+  //
+  ProxyGestureListener get gestureProxy => _gestureProxy;
+
   /// Whether or not the chart will respond to tap events.
   ///
   /// This will generally be true if there is a behavior attached to the chart
   /// that does something with tap events, such as "click to select data."
   bool get isTappable => _behaviorTappableMap.isNotEmpty;
 
-  final _gestureProxy = ProxyGestureListener();
+  int get marginBottom => _layoutManager.marginBottom;
 
-  final _selectionModels = <SelectionModelType, MutableSelectionModel<D>>{};
+  int get marginLeft => _layoutManager.marginLeft;
+
+  int get marginRight => _layoutManager.marginRight;
+
+  int get marginTop => _layoutManager.marginTop;
 
   /// Whether selected data should be restricted to only have points that
   /// cover this event location.
@@ -111,63 +173,27 @@ abstract class BaseChart<D> {
   /// Should be true for Scatter plots.
   bool get selectOverlappingPoints => false;
 
-  final _lifecycleListeners = <LifecycleListener<D>>[];
+  /// Attaches a behavior to the chart.
+  ///
+  /// Setting a behavior with the same role as a behavior already attached
+  /// to the chart will replace the old behavior. The old behavior's removeFrom
+  /// method will be called before we attach the behavior.
+  void addBehavior(ChartBehavior<D> behavior) {
+    final role = behavior.role;
 
-  BaseChart({LayoutConfig? layoutConfig})
-      : _layoutManager = LayoutManagerImpl(config: layoutConfig);
-
-  void init(ChartContext context, GraphicsFactory graphicsFactory) {
-    this.context = context;
-
-    // When graphics factory is updated, update all the views.
-    if (this.graphicsFactory != graphicsFactory) {
-      this.graphicsFactory = graphicsFactory;
-
-      _layoutManager.applyToViews(
-          (LayoutView view) => view.graphicsFactory = graphicsFactory);
+    if (_behaviorRoleMap[role] != behavior) {
+      // Remove any old behavior with the same role.
+      removeBehavior(_behaviorRoleMap[role]);
+      // Add the behavior.
+      _behaviorRoleMap[role] = behavior;
     }
 
-    configurationChanged();
+    // Add the behavior if it wasn't already added.
+    if (!_behaviorStack.contains(behavior)) {
+      _behaviorStack.add(behavior);
+      behavior.attachTo(this);
+    }
   }
-
-  /// Updates the layout configuration used inside the layout manager.
-  void updateConfig(LayoutConfig layoutConfig) {
-    _layoutManager.updateConfig(layoutConfig);
-  }
-
-  bool _chartIsDirty = false;
-
-  /// If the chart configuration has changed and requires a redraw.
-  bool get chartIsDirty => _chartIsDirty;
-
-  /// Resets the chart dirty flag to `false`.
-  void resetChartDirtyFlag() {
-    _chartIsDirty = false;
-  }
-
-  /// Marks the chart as dirty.
-  ///
-  /// When a chart axis or configurable is changed and will require a redraw
-  /// next frame the chart must be marked dirty.
-  void markChartDirty() {
-    _chartIsDirty = true;
-  }
-
-  /// Finish configuring components that require context and graphics factory.
-  ///
-  /// Some components require context and graphics factory to be set again when
-  /// configuration has changed but the configuration is set prior to the
-  /// chart first calling init with the context.
-  void configurationChanged() {}
-
-  int? get chartWidth => _chartWidth;
-
-  int? get chartHeight => _chartHeight;
-
-  //
-  // Gesture proxy methods
-  //
-  ProxyGestureListener get gestureProxy => _gestureProxy;
 
   /// Add a [GestureListener] to this chart.
   GestureListener addGestureListener(GestureListener listener) {
@@ -175,39 +201,10 @@ abstract class BaseChart<D> {
     return listener;
   }
 
-  /// Remove a [GestureListener] from this chart.
-  void removeGestureListener(GestureListener listener) {
-    _gestureProxy.remove(listener);
-  }
-
   LifecycleListener<D> addLifecycleListener(LifecycleListener<D> listener) {
     _lifecycleListeners.add(listener);
     return listener;
   }
-
-  bool removeLifecycleListener(LifecycleListener<D> listener) =>
-      _lifecycleListeners.remove(listener);
-
-  /// Returns MutableSelectionModel for the given type. Lazy creates one upon first
-  /// request.
-  MutableSelectionModel<D> getSelectionModel(SelectionModelType type) {
-    return _selectionModels.putIfAbsent(type, () => MutableSelectionModel<D>());
-  }
-
-  /// Returns a list of datum details from selection model of [type].
-  List<DatumDetails<D>> getDatumDetails(SelectionModelType type);
-
-  //
-  // Renderer methods
-  //
-
-  set defaultRenderer(SeriesRenderer<D> renderer) {
-    renderer.rendererId = SeriesRenderer.defaultRendererId;
-    addSeriesRenderer(renderer);
-  }
-
-  SeriesRenderer<D> get defaultRenderer =>
-      getSeriesRenderer(SeriesRenderer.defaultRendererId);
 
   void addSeriesRenderer(SeriesRenderer<D> renderer) {
     final rendererId = renderer.rendererId;
@@ -223,29 +220,188 @@ abstract class BaseChart<D> {
     _seriesRenderers[rendererId] = renderer;
   }
 
-  SeriesRenderer<D> getSeriesRenderer(String? rendererId) {
-    var renderer = _seriesRenderers[rendererId];
+  void addView(LayoutView view) {
+    if (!_layoutManager.isAttached(view)) {
+      view.graphicsFactory = graphicsFactory;
+      _layoutManager.addView(view);
+    }
+  }
 
-    // Special case, if we are asking for the default and we haven't made it
-    // yet, then make it now.
-    if (renderer == null) {
-      // TODO: Throw an error if
-      // `rendererId != SeriesRenderer.defaultRendererId`?
-      renderer = makeDefaultRenderer();
-      defaultRenderer = renderer;
+  /// Finish configuring components that require context and graphics factory.
+  ///
+  /// Some components require context and graphics factory to be set again when
+  /// configuration has changed but the configuration is set prior to the
+  /// chart first calling init with the context.
+  void configurationChanged() {}
+
+  /// Preprocess series to assign missing color functions.
+  void configureSeries(List<MutableSeries<D>> seriesList) {
+    final rendererToSeriesList = <String?, List<MutableSeries<D>>>{};
+
+    // Build map of rendererIds to SeriesLists. This map can't be re-used later
+    // in the preprocessSeries call because some behaviors might alter the
+    // seriesList.
+    seriesList.forEach((MutableSeries<D> series) {
+      final rendererId = series.getAttr(rendererIdKey);
+      rendererToSeriesList.putIfAbsent(rendererId, () => []).add(series);
+    });
+
+    // Have each renderer add missing color functions to their seriesLists.
+    rendererToSeriesList
+        .forEach((String? rendererId, List<MutableSeries<D>> seriesList) {
+      getSeriesRenderer(rendererId).configureSeries(seriesList);
+    });
+  }
+
+  /// Helper method to create a behavior with congruent types.
+  ///
+  /// This invokes the provides helper with type parameters that match this
+  /// chart.
+  ChartBehavior<D> createBehavior(BehaviorCreator creator) => creator<D>();
+
+  /// Called to free up any resources due to chart going away.
+  void destroy() {
+    // Walk them in add order to support behaviors that remove other behaviors.
+    for (var i = 0; i < _behaviorStack.length; i++) {
+      _behaviorStack[i].removeFrom(this);
+    }
+    _behaviorStack.clear();
+    _behaviorRoleMap.clear();
+    _selectionModels.values
+        .forEach((selectionModel) => selectionModel.clearAllListeners());
+  }
+
+  //
+  // Behavior methods
+  //
+
+  //
+  // Draw methods
+  //
+  void draw(List<Series<dynamic, D>> seriesList) {
+    // Clear the selection model when [seriesList] changes.
+    for (final selectionModel in _selectionModels.values) {
+      selectionModel.clearSelection(notifyListeners: false);
     }
 
-    return renderer;
+    var processedSeriesList =
+        List.of(seriesList.map<MutableSeries<D>>(makeSeries));
+
+    // Allow listeners to manipulate the seriesList.
+    fireOnDraw(processedSeriesList);
+
+    // Set an index on the series list.
+    // This can be used by listeners of selection to determine the order of
+    // series, because the selection details are not returned in this order.
+    var seriesIndex = 0;
+    processedSeriesList.forEach((series) => series.seriesIndex = seriesIndex++);
+
+    // Initially save a reference to processedSeriesList. After drawInternal
+    // finishes, we expect _currentSeriesList to contain a new, possibly
+    // modified list.
+    _currentSeriesList = processedSeriesList;
+
+    // Store off processedSeriesList for use later during redraw calls. This
+    // list will not reflect any modifications that were made to
+    // _currentSeriesList by behaviors during the draw cycle.
+    _originalSeriesList = processedSeriesList;
+
+    drawInternal(processedSeriesList, skipAnimation: false, skipLayout: false);
   }
 
-  SeriesRenderer<D> makeDefaultRenderer();
+  void drawInternal(List<MutableSeries<D>> seriesList,
+      {bool? skipAnimation, bool? skipLayout}) {
+    seriesList = seriesList
+        .map((MutableSeries<D> series) => MutableSeries<D>.clone(series))
+        .toList();
 
-  bool pointWithinRenderer(Point<double> chartPosition) {
-    return _usingRenderers.any((String rendererId) =>
-        getSeriesRenderer(rendererId)
-            .componentBounds!
-            .containsPoint(chartPosition));
+    // TODO: Handle exiting renderers.
+    if (skipAnimation != null) {
+      _animationsTemporarilyDisabled = skipAnimation;
+    }
+
+    configureSeries(seriesList);
+
+    // Allow listeners to manipulate the processed seriesList.
+    fireOnPreprocess(seriesList);
+
+    _rendererToSeriesList = preprocessSeries(seriesList);
+
+    // Allow listeners to manipulate the processed seriesList.
+    fireOnPostprocess(seriesList);
+
+    _currentSeriesList = seriesList;
   }
+
+  @protected
+  void fireOnAnimationComplete() {
+    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
+      listener.onAnimationComplete?.call();
+    });
+  }
+
+  @protected
+  void fireOnAxisConfigured() {
+    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
+      listener.onAxisConfigured?.call();
+    });
+  }
+
+  @protected
+  void fireOnDraw(List<MutableSeries<D>> seriesList) {
+    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
+      listener.onData?.call(seriesList);
+    });
+  }
+
+  @protected
+  void fireOnPostprocess(List<MutableSeries<D>> seriesList) {
+    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
+      listener.onPostprocess?.call(seriesList);
+    });
+  }
+
+  @protected
+  void fireOnPostrender(ChartCanvas canvas) {
+    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
+      listener.onPostrender?.call(canvas);
+    });
+  }
+
+  @protected
+  void fireOnPreprocess(List<MutableSeries<D>> seriesList) {
+    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
+      listener.onPreprocess?.call(seriesList);
+    });
+  }
+
+  /// Retrieves the datum details for all data on the chart.
+  List<DatumDetails<D>> getAllDatumDetails(
+      {bool includeOverlaySeries = false}) {
+    final details = <DatumDetails<D>>[];
+
+    if (_currentSeriesList == null) {
+      return details;
+    }
+
+    for (final series in _currentSeriesList!) {
+      final rendererId = series.getAttr(rendererIdKey);
+
+      if (!includeOverlaySeries && series.overlaySeries) {
+        continue;
+      }
+
+      for (dynamic datum in series.data) {
+        details.add(getSeriesRenderer(rendererId)
+            .getDetailsForSeriesDatum(SeriesDatum<D>(series, datum)));
+      }
+    }
+
+    return details;
+  }
+
+  /// Returns a list of datum details from selection model of [type].
+  List<DatumDetails<D>> getDatumDetails(SelectionModelType type);
 
   /// Retrieves the datum details that are nearest to the given [drawAreaPoint].
   ///
@@ -319,117 +475,39 @@ abstract class BaseChart<D> {
     return details;
   }
 
-  /// Retrieves the datum details for all data on the chart.
-  List<DatumDetails<D>> getAllDatumDetails(
-      {bool includeOverlaySeries = false}) {
-    final details = <DatumDetails<D>>[];
-
-    if (_currentSeriesList == null) {
-      return details;
-    }
-
-    for (final series in _currentSeriesList!) {
-      final rendererId = series.getAttr(rendererIdKey);
-
-      if (!includeOverlaySeries && series.overlaySeries) {
-        continue;
-      }
-
-      for (dynamic datum in series.data) {
-        details.add(getSeriesRenderer(rendererId)
-            .getDetailsForSeriesDatum(SeriesDatum<D>(series, datum)));
-      }
-    }
-
-    return details;
+  /// Returns MutableSelectionModel for the given type. Lazy creates one upon first
+  /// request.
+  MutableSelectionModel<D> getSelectionModel(SelectionModelType type) {
+    return _selectionModels.putIfAbsent(type, () => MutableSelectionModel<D>());
   }
 
-  //
-  // Behavior methods
-  //
+  SeriesRenderer<D> getSeriesRenderer(String? rendererId) {
+    var renderer = _seriesRenderers[rendererId];
 
-  /// Helper method to create a behavior with congruent types.
-  ///
-  /// This invokes the provides helper with type parameters that match this
-  /// chart.
-  ChartBehavior<D> createBehavior(BehaviorCreator creator) => creator<D>();
-
-  /// Attaches a behavior to the chart.
-  ///
-  /// Setting a behavior with the same role as a behavior already attached
-  /// to the chart will replace the old behavior. The old behavior's removeFrom
-  /// method will be called before we attach the behavior.
-  void addBehavior(ChartBehavior<D> behavior) {
-    final role = behavior.role;
-
-    if (role != null && _behaviorRoleMap[role] != behavior) {
-      // Remove any old behavior with the same role.
-      removeBehavior(_behaviorRoleMap[role]);
-      // Add the behavior.
-      _behaviorRoleMap[role] = behavior;
+    // Special case, if we are asking for the default and we haven't made it
+    // yet, then make it now.
+    if (renderer == null) {
+      // TODO: Throw an error if
+      // `rendererId != SeriesRenderer.defaultRendererId`?
+      renderer = makeDefaultRenderer();
+      defaultRenderer = renderer;
     }
 
-    // Add the behavior if it wasn't already added.
-    if (!_behaviorStack.contains(behavior)) {
-      _behaviorStack.add(behavior);
-      behavior.attachTo(this);
-    }
+    return renderer;
   }
 
-  /// Removes a behavior from the chart.
-  ///
-  /// Returns true if a behavior was removed, otherwise returns false.
-  bool removeBehavior(ChartBehavior<D>? behavior) {
-    if (behavior == null) {
-      return false;
+  void init(ChartContext context, GraphicsFactory graphicsFactory) {
+    this.context = context;
+
+    // When graphics factory is updated, update all the views.
+    if (this.graphicsFactory != graphicsFactory) {
+      this.graphicsFactory = graphicsFactory;
+
+      _layoutManager.applyToViews(
+          (LayoutView view) => view.graphicsFactory = graphicsFactory);
     }
 
-    final role = behavior.role;
-    if (role != null && _behaviorRoleMap[role] == behavior) {
-      _behaviorRoleMap.remove(role);
-    }
-
-    // Make sure the removed behavior is no longer registered for tap events.
-    unregisterTappable(behavior);
-
-    final wasAttached = _behaviorStack.remove(behavior);
-    behavior.removeFrom(this);
-
-    return wasAttached;
-  }
-
-  /// Tells the chart that this behavior responds to tap events.
-  ///
-  /// This should only be called after [behavior] has been attached to the chart
-  /// via [addBehavior].
-  void registerTappable(ChartBehavior<D> behavior) {
-    final role = behavior.role;
-
-    if (role != null &&
-        _behaviorRoleMap[role] == behavior &&
-        _behaviorTappableMap[role] != behavior) {
-      _behaviorTappableMap[role] = behavior;
-    }
-  }
-
-  /// Tells the chart that this behavior no longer responds to tap events.
-  void unregisterTappable(ChartBehavior<D> behavior) {
-    final role = behavior.role;
-    if (role != null && _behaviorTappableMap[role] == behavior) {
-      _behaviorTappableMap.remove(role);
-    }
-  }
-
-  /// Returns a list of behaviors that have been added.
-  List<ChartBehavior<D>> get behaviors => List.unmodifiable(_behaviorStack);
-
-  //
-  // Layout methods
-  //
-  void measure(int width, int height) {
-    if (_rendererToSeriesList != null) {
-      _layoutManager.measure(width, height);
-    }
+    configurationChanged();
   }
 
   void layout(int width, int height) {
@@ -446,112 +524,7 @@ abstract class BaseChart<D> {
     _layoutManager.layout(width, height);
   }
 
-  void addView(LayoutView view) {
-    if (!_layoutManager.isAttached(view)) {
-      view.graphicsFactory = graphicsFactory;
-      _layoutManager.addView(view);
-    }
-  }
-
-  void removeView(LayoutView view) {
-    _layoutManager.removeView(view);
-  }
-
-  /// Returns whether or not [point] is within the draw area bounds.
-  bool withinDrawArea(Point<num> point) {
-    return _layoutManager.withinDrawArea(point);
-  }
-
-  /// Returns the bounds of the chart draw area.
-  Rectangle<int> get drawAreaBounds => _layoutManager.drawAreaBounds;
-
-  int get marginBottom => _layoutManager.marginBottom;
-
-  int get marginLeft => _layoutManager.marginLeft;
-
-  int get marginRight => _layoutManager.marginRight;
-
-  int get marginTop => _layoutManager.marginTop;
-
-  /// Returns the combined bounds of the chart draw area and all layout
-  /// components that draw series data.
-  Rectangle<int> get drawableLayoutAreaBounds =>
-      _layoutManager.drawableLayoutAreaBounds;
-
-  //
-  // Draw methods
-  //
-  void draw(List<Series<dynamic, D>> seriesList) {
-    // Clear the selection model when [seriesList] changes.
-    for (final selectionModel in _selectionModels.values) {
-      selectionModel.clearSelection(notifyListeners: false);
-    }
-
-    var processedSeriesList =
-        List.of(seriesList.map<MutableSeries<D>>(makeSeries));
-
-    // Allow listeners to manipulate the seriesList.
-    fireOnDraw(processedSeriesList);
-
-    // Set an index on the series list.
-    // This can be used by listeners of selection to determine the order of
-    // series, because the selection details are not returned in this order.
-    var seriesIndex = 0;
-    processedSeriesList.forEach((series) => series.seriesIndex = seriesIndex++);
-
-    // Initially save a reference to processedSeriesList. After drawInternal
-    // finishes, we expect _currentSeriesList to contain a new, possibly
-    // modified list.
-    _currentSeriesList = processedSeriesList;
-
-    // Store off processedSeriesList for use later during redraw calls. This
-    // list will not reflect any modifications that were made to
-    // _currentSeriesList by behaviors during the draw cycle.
-    _originalSeriesList = processedSeriesList;
-
-    drawInternal(processedSeriesList, skipAnimation: false, skipLayout: false);
-  }
-
-  /// Redraws and re-lays-out the chart using the previously rendered layout
-  /// dimensions.
-  void redraw({bool skipAnimation = false, bool skipLayout = false}) {
-    drawInternal(_originalSeriesList,
-        skipAnimation: skipAnimation, skipLayout: skipLayout);
-
-    // Trigger layout and actually redraw the chart.
-    if (!skipLayout) {
-      measure(_chartWidth!, _chartHeight!);
-      layout(_chartWidth!, _chartHeight!);
-    } else {
-      onSkipLayout();
-    }
-  }
-
-  void drawInternal(List<MutableSeries<D>> seriesList,
-      {bool? skipAnimation, bool? skipLayout}) {
-    seriesList = seriesList
-        .map((MutableSeries<D> series) => MutableSeries<D>.clone(series))
-        .toList();
-
-    // TODO: Handle exiting renderers.
-    if (skipAnimation != null) {
-      _animationsTemporarilyDisabled = skipAnimation;
-    }
-
-    configureSeries(seriesList);
-
-    // Allow listeners to manipulate the processed seriesList.
-    fireOnPreprocess(seriesList);
-
-    _rendererToSeriesList = preprocessSeries(seriesList);
-
-    // Allow listeners to manipulate the processed seriesList.
-    fireOnPostprocess(seriesList);
-
-    _currentSeriesList = seriesList;
-  }
-
-  List<MutableSeries<D>> get currentSeriesList => _currentSeriesList!;
+  SeriesRenderer<D> makeDefaultRenderer();
 
   MutableSeries<D> makeSeries(Series<dynamic, D> series) {
     final s = MutableSeries<D>(series);
@@ -565,23 +538,67 @@ abstract class BaseChart<D> {
     return s;
   }
 
-  /// Preprocess series to assign missing color functions.
-  void configureSeries(List<MutableSeries<D>> seriesList) {
-    final rendererToSeriesList = <String?, List<MutableSeries<D>>>{};
+  /// Marks the chart as dirty.
+  ///
+  /// When a chart axis or configurable is changed and will require a redraw
+  /// next frame the chart must be marked dirty.
+  void markChartDirty() {
+    _chartIsDirty = true;
+  }
 
-    // Build map of rendererIds to SeriesLists. This map can't be re-used later
-    // in the preprocessSeries call because some behaviors might alter the
-    // seriesList.
-    seriesList.forEach((MutableSeries<D> series) {
-      final rendererId = series.getAttr(rendererIdKey);
-      rendererToSeriesList.putIfAbsent(rendererId, () => []).add(series);
-    });
+  //
+  // Layout methods
+  //
+  void measure(int width, int height) {
+    if (_rendererToSeriesList != null) {
+      _layoutManager.measure(width, height);
+    }
+  }
 
-    // Have each renderer add missing color functions to their seriesLists.
+  void onPostLayout(Map<String, List<MutableSeries<D>>> rendererToSeriesList) {
+    // Update each renderer with
     rendererToSeriesList
-        .forEach((String? rendererId, List<MutableSeries<D>> seriesList) {
-      getSeriesRenderer(rendererId).configureSeries(seriesList);
+        .forEach((String rendererId, List<MutableSeries<D>> seriesList) {
+      getSeriesRenderer(rendererId).update(seriesList, animatingThisDraw);
     });
+
+    // Request animation
+    if (animatingThisDraw) {
+      animationPercent = 0.0;
+      context.requestAnimation(transition);
+    } else {
+      animationPercent = 1.0;
+      context.requestPaint();
+    }
+
+    _animationsTemporarilyDisabled = false;
+  }
+
+  void onSkipLayout() {
+    onPostLayout(_rendererToSeriesList!);
+  }
+
+  void paint(ChartCanvas canvas) {
+    canvas.drawingView = 'BaseView';
+    _layoutManager.paintOrderedViews.forEach((LayoutView view) {
+      canvas.drawingView = view.runtimeType.toString();
+      view.paint(canvas, animatingThisDraw ? animationPercent : 1.0);
+    });
+
+    canvas.drawingView = 'PostRender';
+    fireOnPostrender(canvas);
+    canvas.drawingView = null;
+
+    if (animationPercent == 1.0) {
+      fireOnAnimationComplete();
+    }
+  }
+
+  bool pointWithinRenderer(Point<double> chartPosition) {
+    return _usingRenderers.any((String rendererId) =>
+        getSeriesRenderer(rendererId)
+            .componentBounds!
+            .containsPoint(chartPosition));
   }
 
   /// Preprocess series to allow stacking and other mutations.
@@ -615,102 +632,89 @@ abstract class BaseChart<D> {
     return rendererToSeriesList;
   }
 
-  void onSkipLayout() {
-    onPostLayout(_rendererToSeriesList!);
-  }
+  /// Redraws and re-lays-out the chart using the previously rendered layout
+  /// dimensions.
+  void redraw({bool skipAnimation = false, bool skipLayout = false}) {
+    drawInternal(_originalSeriesList,
+        skipAnimation: skipAnimation, skipLayout: skipLayout);
 
-  void onPostLayout(Map<String, List<MutableSeries<D>>> rendererToSeriesList) {
-    // Update each renderer with
-    rendererToSeriesList
-        .forEach((String rendererId, List<MutableSeries<D>> seriesList) {
-      getSeriesRenderer(rendererId).update(seriesList, animatingThisDraw);
-    });
-
-    // Request animation
-    if (animatingThisDraw) {
-      animationPercent = 0.0;
-      context.requestAnimation(transition);
+    // Trigger layout and actually redraw the chart.
+    if (!skipLayout) {
+      measure(_chartWidth!, _chartHeight!);
+      layout(_chartWidth!, _chartHeight!);
     } else {
-      animationPercent = 1.0;
-      context.requestPaint();
-    }
-
-    _animationsTemporarilyDisabled = false;
-  }
-
-  void paint(ChartCanvas canvas) {
-    canvas.drawingView = 'BaseView';
-    _layoutManager.paintOrderedViews.forEach((LayoutView view) {
-      canvas.drawingView = view.runtimeType.toString();
-      view.paint(canvas, animatingThisDraw ? animationPercent : 1.0);
-    });
-
-    canvas.drawingView = 'PostRender';
-    fireOnPostrender(canvas);
-    canvas.drawingView = null;
-
-    if (animationPercent == 1.0) {
-      fireOnAnimationComplete();
+      onSkipLayout();
     }
   }
 
-  bool get animatingThisDraw =>
-      transition != null &&
-      transition.inMilliseconds > 0 &&
-      !_animationsTemporarilyDisabled;
+  /// Tells the chart that this behavior responds to tap events.
+  ///
+  /// This should only be called after [behavior] has been attached to the chart
+  /// via [addBehavior].
+  void registerTappable(ChartBehavior<D> behavior) {
+    final role = behavior.role;
 
-  @protected
-  void fireOnDraw(List<MutableSeries<D>> seriesList) {
-    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
-      listener.onData?.call(seriesList);
-    });
-  }
-
-  @protected
-  void fireOnPreprocess(List<MutableSeries<D>> seriesList) {
-    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
-      listener.onPreprocess?.call(seriesList);
-    });
-  }
-
-  @protected
-  void fireOnPostprocess(List<MutableSeries<D>> seriesList) {
-    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
-      listener.onPostprocess?.call(seriesList);
-    });
-  }
-
-  @protected
-  void fireOnAxisConfigured() {
-    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
-      listener.onAxisConfigured?.call();
-    });
-  }
-
-  @protected
-  void fireOnPostrender(ChartCanvas canvas) {
-    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
-      listener.onPostrender?.call(canvas);
-    });
-  }
-
-  @protected
-  void fireOnAnimationComplete() {
-    _lifecycleListeners.forEach((LifecycleListener<D> listener) {
-      listener.onAnimationComplete?.call();
-    });
-  }
-
-  /// Called to free up any resources due to chart going away.
-  void destroy() {
-    // Walk them in add order to support behaviors that remove other behaviors.
-    for (var i = 0; i < _behaviorStack.length; i++) {
-      _behaviorStack[i].removeFrom(this);
+    if (_behaviorRoleMap[role] == behavior &&
+        _behaviorTappableMap[role] != behavior) {
+      _behaviorTappableMap[role] = behavior;
     }
-    _behaviorStack.clear();
-    _behaviorRoleMap.clear();
-    _selectionModels.values
-        .forEach((selectionModel) => selectionModel.clearAllListeners());
+  }
+
+  /// Removes a behavior from the chart.
+  ///
+  /// Returns true if a behavior was removed, otherwise returns false.
+  bool removeBehavior(ChartBehavior<D>? behavior) {
+    if (behavior == null) {
+      return false;
+    }
+
+    final role = behavior.role;
+    if (_behaviorRoleMap[role] == behavior) {
+      _behaviorRoleMap.remove(role);
+    }
+
+    // Make sure the removed behavior is no longer registered for tap events.
+    unregisterTappable(behavior);
+
+    final wasAttached = _behaviorStack.remove(behavior);
+    behavior.removeFrom(this);
+
+    return wasAttached;
+  }
+
+  /// Remove a [GestureListener] from this chart.
+  void removeGestureListener(GestureListener listener) {
+    _gestureProxy.remove(listener);
+  }
+
+  bool removeLifecycleListener(LifecycleListener<D> listener) =>
+      _lifecycleListeners.remove(listener);
+
+  void removeView(LayoutView view) {
+    _layoutManager.removeView(view);
+  }
+
+  /// Resets the chart dirty flag to `false`.
+  void resetChartDirtyFlag() {
+    _chartIsDirty = false;
+  }
+
+  /// Tells the chart that this behavior no longer responds to tap events.
+  void unregisterTappable(ChartBehavior<D> behavior) {
+    final role = behavior.role;
+    if (_behaviorTappableMap[role] == behavior) {
+      _behaviorTappableMap.remove(role);
+    }
+  }
+
+  /// Updates the layout configuration used inside the layout manager.
+  void updateConfig(LayoutConfig layoutConfig) {
+    _layoutManager.updateConfig(layoutConfig);
+  }
+
+  /// Returns whether or not [point] is within the draw area bounds.
+  bool withinDrawArea(Point<num> point) {
+    return _layoutManager.withinDrawArea(point);
   }
 }
 
@@ -761,8 +765,3 @@ class LifecycleListener<D> {
       this.onPostrender,
       this.onAnimationComplete});
 }
-
-typedef LifecycleSeriesListCallback<D> = void Function(
-    List<MutableSeries<D>> seriesList);
-typedef LifecycleCanvasCallback = void Function(ChartCanvas canvas);
-typedef LifecycleEmptyCallback = void Function();
