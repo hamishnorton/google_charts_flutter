@@ -49,17 +49,6 @@ class SimpleOrdinalScale implements OrdinalScale {
   int? _viewportDataSize;
   String? _viewportStartingDomain;
 
-  // TODO: When there are horizontal bars increasing from where
-  // the domain and measure axis intersects but the desired behavior is
-  // flipped. The plan is to fix this by fixing code to flip the range in the
-  // code.
-  //
-  // If range start is less than range end, then the domain is calculated by
-  // adding the band width. If range start is greater than range end, then the
-  // domain is calculated by subtracting from the band width (ex. horizontal
-  // bar charts where first series is at the bottom of the chart).
-  bool get _isVertical => range.start > range.end;
-
   SimpleOrdinalScale() : _domain = OrdinalScaleDomainInfo();
 
   SimpleOrdinalScale._copy(SimpleOrdinalScale other)
@@ -68,6 +57,21 @@ class SimpleOrdinalScale implements OrdinalScale {
         _viewportScale = other._viewportScale,
         _viewportTranslatePx = other._viewportTranslatePx,
         _rangeBandConfig = other._rangeBandConfig;
+
+  @override
+  OrdinalScaleDomainInfo get domain => _domain;
+
+  @override
+  double get domainStepSize => 1.0;
+
+  @override
+  ScaleOutputExtent get range => _range;
+
+  @override
+  set range(ScaleOutputExtent? extent) {
+    _range = extent!;
+    _scaleChanged = true;
+  }
 
   @override
   double get rangeBand {
@@ -79,23 +83,10 @@ class SimpleOrdinalScale implements OrdinalScale {
   }
 
   @override
-  double get stepSize {
-    if (_scaleChanged) {
-      _updateScale();
-    }
-
-    return _cachedStepSizePixels;
-  }
-
-  @override
-  double get domainStepSize => 1.0;
+  RangeBandConfig get rangeBandConfig => _rangeBandConfig;
 
   @override
   set rangeBandConfig(RangeBandConfig barGroupWidthConfig) {
-    if (barGroupWidthConfig == null) {
-      throw ArgumentError.notNull('RangeBandConfig must not be null.');
-    }
-
     if (barGroupWidthConfig.type == RangeBandType.fixedDomain ||
         barGroupWidthConfig.type == RangeBandType.none) {
       throw ArgumentError(
@@ -107,7 +98,19 @@ class SimpleOrdinalScale implements OrdinalScale {
   }
 
   @override
-  RangeBandConfig get rangeBandConfig => _rangeBandConfig;
+  int get rangeWidth => (range.start - range.end).abs().toInt();
+
+  @override
+  double get stepSize {
+    if (_scaleChanged) {
+      _updateScale();
+    }
+
+    return _cachedStepSizePixels;
+  }
+
+  @override
+  StepSizeConfig get stepSizeConfig => _stepSizeConfig;
 
   @override
   set stepSizeConfig(StepSizeConfig? config) {
@@ -119,144 +122,6 @@ class SimpleOrdinalScale implements OrdinalScale {
   }
 
   @override
-  StepSizeConfig get stepSizeConfig => _stepSizeConfig;
-
-  /// Converts [domainValue] to the position to place the band/bar.
-  ///
-  /// Returns 0 if not found.
-  @override
-  double operator [](String domainValue) {
-    if (_scaleChanged) {
-      _updateScale();
-    }
-
-    final i = _domain.indexOf(domainValue);
-    if (i != null) {
-      return viewportTranslatePx +
-          _range.start +
-          _cachedRangeBandShift +
-          (_cachedStepSizePixels * i);
-    }
-    // If it wasn't found
-    return 0.0;
-  }
-
-  @override
-  String reverse(double pixelLocation) {
-    final index = (pixelLocation -
-            viewportTranslatePx -
-            _range.start -
-            _cachedRangeBandShift) /
-        _cachedStepSizePixels;
-
-    // The last pixel belongs in the last step even if it tries to round up.
-    //
-    // Index may be less than 0 when [pixelLocation] is less than the width of
-    // the range band shift. This may happen on the far left side of the chart,
-    // where we want the first datum anyways. Wrapping the result in "max(0, x)"
-    // cuts off these negative values.
-    return _domain
-        .getDomainAtIndex(max(0, min(index.round(), domain.size - 1)));
-  }
-
-  @override
-  bool canTranslate(String domainValue) => _domain.indexOf(domainValue) != null;
-
-  @override
-  OrdinalScaleDomainInfo get domain => _domain;
-
-  /// Update the scale to include [domainValue].
-  @override
-  void addDomain(String domainValue) {
-    _domain.add(domainValue);
-    _scaleChanged = true;
-  }
-
-  @override
-  set range(ScaleOutputExtent? extent) {
-    _range = extent!;
-    _scaleChanged = true;
-  }
-
-  @override
-  ScaleOutputExtent get range => _range;
-
-  @override
-  void resetDomain() {
-    _domain.clear();
-    _scaleChanged = true;
-  }
-
-  @override
-  void resetViewportSettings() {
-    _viewportScale = 1.0;
-    _viewportTranslatePx = 0.0;
-    _scaleChanged = true;
-  }
-
-  @override
-  int get rangeWidth => (range.start - range.end).abs().toInt();
-
-  @override
-  double get viewportScalingFactor => _viewportScale;
-
-  @override
-  double get viewportTranslatePx => _viewportTranslatePx;
-
-  @override
-  void setViewportSettings(double viewportScale, double viewportTranslatePx) {
-    _viewportScale = viewportScale;
-    if (_isVertical) {
-      _viewportTranslatePx = max(
-          min(-(rangeWidth * (1.0 - viewportScale)), viewportTranslatePx), 0);
-    } else {
-      _viewportTranslatePx =
-          min(max(rangeWidth * (1.0 - viewportScale), viewportTranslatePx), 0);
-    }
-    _scaleChanged = true;
-  }
-
-  @override
-  void setViewport(int? viewportDataSize, String? startingDomain) {
-    if (startingDomain != null &&
-        viewportDataSize != null &&
-        viewportDataSize <= 0) {
-      throw ArgumentError('viewportDataSize cannot be less than 1.');
-    }
-
-    _scaleChanged = true;
-    _viewportDataSize = viewportDataSize;
-    _viewportStartingDomain = startingDomain;
-  }
-
-  /// Update this scale's viewport using settings [_viewportDataSize] and
-  /// [_viewportStartingDomain].
-  void _updateViewport() {
-    setViewportSettings(1.0, 0.0);
-    _recalculateScale();
-    if (_domain.isEmpty) {
-      return;
-    }
-
-    // Update the scale with zoom level to help find the correct translate.
-    setViewportSettings(_domain.size / min(_viewportDataSize!, _domain.size),
-        _isVertical ? double.maxFinite : 0.0);
-    _recalculateScale();
-    final domainIndex = _domain.indexOf(_viewportStartingDomain!);
-    if (domainIndex != null) {
-      var viewportTranslatePx = 0.0;
-      if (_isVertical) {
-        // Account for the domain values being reversed.
-        viewportTranslatePx =
-            (_viewportDataSize! - domainIndex - 1) * _cachedStepSizePixels;
-      } else {
-        viewportTranslatePx = -(_cachedStepSizePixels * domainIndex);
-      }
-      setViewportSettings(_viewportScale, viewportTranslatePx);
-    }
-  }
-
-  @override
   int get viewportDataSize {
     if (_scaleChanged) {
       _updateScale();
@@ -264,6 +129,9 @@ class SimpleOrdinalScale implements OrdinalScale {
 
     return _domain.isEmpty ? 0 : (rangeWidth ~/ _cachedStepSizePixels.abs());
   }
+
+  @override
+  double get viewportScalingFactor => _viewportScale;
 
   @override
   String? get viewportStartingDomain {
@@ -287,16 +155,55 @@ class SimpleOrdinalScale implements OrdinalScale {
   }
 
   @override
-  bool isRangeValueWithinViewport(double rangeValue) {
-    return withinBounds(rangeValue, range.min, range.max);
+  double get viewportTranslatePx => _viewportTranslatePx;
+
+  // TODO: When there are horizontal bars increasing from where
+  // the domain and measure axis intersects but the desired behavior is
+  // flipped. The plan is to fix this by fixing code to flip the range in the
+  // code.
+  //
+  // If range start is less than range end, then the domain is calculated by
+  // adding the band width. If range start is greater than range end, then the
+  // domain is calculated by subtracting from the band width (ex. horizontal
+  // bar charts where first series is at the bottom of the chart).
+  bool get _isVertical => range.start > range.end;
+
+  /// Converts [domainValue] to the position to place the band/bar.
+  ///
+  /// Returns 0 if not found.
+  @override
+  double operator [](String domainValue) {
+    if (_scaleChanged) {
+      _updateScale();
+    }
+
+    final i = _domain.indexOf(domainValue);
+    if (i != null) {
+      return viewportTranslatePx +
+          _range.start +
+          _cachedRangeBandShift +
+          (_cachedStepSizePixels * i);
+    }
+    // If it wasn't found
+    return 0.0;
   }
+
+  /// Update the scale to include [domainValue].
+  @override
+  void addDomain(String domainValue) {
+    _domain.add(domainValue);
+    _scaleChanged = true;
+  }
+
+  @override
+  bool canTranslate(String domainValue) => _domain.indexOf(domainValue) != null;
 
   @override
   int compareDomainValueToViewport(String domainValue) {
     // TODO: This currently works because range defaults to 0-1
     // This needs to be looked into further.
     var i = _domain.indexOf(domainValue);
-    if (i != null && range != null) {
+    if (i != null) {
       var domainPx = this[domainValue];
       if (domainPx < range.min) {
         return -1;
@@ -312,26 +219,66 @@ class SimpleOrdinalScale implements OrdinalScale {
   @override
   SimpleOrdinalScale copy() => SimpleOrdinalScale._copy(this);
 
-  void _updateCachedFields(
-      double stepSizePixels, double rangeBandPixels, double rangeBandShift) {
-    _cachedStepSizePixels = stepSizePixels;
-    _cachedRangeBandSize = rangeBandPixels;
-    _cachedRangeBandShift = rangeBandShift;
-
-    if (_isVertical) {
-      _cachedStepSizePixels *= -1;
-      _cachedRangeBandShift *= -1;
-    }
-
-    _scaleChanged = false;
+  @override
+  bool isRangeValueWithinViewport(double rangeValue) {
+    return withinBounds(rangeValue, range.min, range.max);
   }
 
-  void _updateScale() {
-    if (_viewportStartingDomain != null && _viewportDataSize != null) {
-      // Update viewport recalculates the scale.
-      _updateViewport();
+  @override
+  void resetDomain() {
+    _domain.clear();
+    _scaleChanged = true;
+  }
+
+  @override
+  void resetViewportSettings() {
+    _viewportScale = 1.0;
+    _viewportTranslatePx = 0.0;
+    _scaleChanged = true;
+  }
+
+  @override
+  String reverse(double pixelLocation) {
+    final index = (pixelLocation -
+            viewportTranslatePx -
+            _range.start -
+            _cachedRangeBandShift) /
+        _cachedStepSizePixels;
+
+    // The last pixel belongs in the last step even if it tries to round up.
+    //
+    // Index may be less than 0 when [pixelLocation] is less than the width of
+    // the range band shift. This may happen on the far left side of the chart,
+    // where we want the first datum anyways. Wrapping the result in "max(0, x)"
+    // cuts off these negative values.
+    return _domain
+        .getDomainAtIndex(max(0, min(index.round(), domain.size - 1)));
+  }
+
+  @override
+  void setViewport(int? viewportDataSize, String? startingDomain) {
+    if (startingDomain != null &&
+        viewportDataSize != null &&
+        viewportDataSize <= 0) {
+      throw ArgumentError('viewportDataSize cannot be less than 1.');
     }
-    _recalculateScale();
+
+    _scaleChanged = true;
+    _viewportDataSize = viewportDataSize;
+    _viewportStartingDomain = startingDomain;
+  }
+
+  @override
+  void setViewportSettings(double viewportScale, double viewportTranslatePx) {
+    _viewportScale = viewportScale;
+    if (_isVertical) {
+      _viewportTranslatePx = max(
+          min(-(rangeWidth * (1.0 - viewportScale)), viewportTranslatePx), 0);
+    } else {
+      _viewportTranslatePx =
+          min(max(rangeWidth * (1.0 - viewportScale), viewportTranslatePx), 0);
+    }
+    _scaleChanged = true;
   }
 
   void _recalculateScale() {
@@ -359,5 +306,54 @@ class SimpleOrdinalScale implements OrdinalScale {
     }
 
     _updateCachedFields(stepSizePixels, rangeBandPixels, stepSizePixels / 2.0);
+  }
+
+  void _updateCachedFields(
+      double stepSizePixels, double rangeBandPixels, double rangeBandShift) {
+    _cachedStepSizePixels = stepSizePixels;
+    _cachedRangeBandSize = rangeBandPixels;
+    _cachedRangeBandShift = rangeBandShift;
+
+    if (_isVertical) {
+      _cachedStepSizePixels *= -1;
+      _cachedRangeBandShift *= -1;
+    }
+
+    _scaleChanged = false;
+  }
+
+  void _updateScale() {
+    if (_viewportStartingDomain != null && _viewportDataSize != null) {
+      // Update viewport recalculates the scale.
+      _updateViewport();
+    }
+    _recalculateScale();
+  }
+
+  /// Update this scale's viewport using settings [_viewportDataSize] and
+  /// [_viewportStartingDomain].
+  void _updateViewport() {
+    setViewportSettings(1.0, 0.0);
+    _recalculateScale();
+    if (_domain.isEmpty) {
+      return;
+    }
+
+    // Update the scale with zoom level to help find the correct translate.
+    setViewportSettings(_domain.size / min(_viewportDataSize!, _domain.size),
+        _isVertical ? double.maxFinite : 0.0);
+    _recalculateScale();
+    final domainIndex = _domain.indexOf(_viewportStartingDomain!);
+    if (domainIndex != null) {
+      var viewportTranslatePx = 0.0;
+      if (_isVertical) {
+        // Account for the domain values being reversed.
+        viewportTranslatePx =
+            (_viewportDataSize! - domainIndex - 1) * _cachedStepSizePixels;
+      } else {
+        viewportTranslatePx = -(_cachedStepSizePixels * domainIndex);
+      }
+      setViewportSettings(_viewportScale, viewportTranslatePx);
+    }
   }
 }
