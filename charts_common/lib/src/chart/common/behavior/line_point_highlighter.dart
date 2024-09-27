@@ -140,6 +140,9 @@ class LinePointHighlighter<D> implements ChartBehavior<D> {
   }
 
   @override
+  String get role => 'LinePointHighlighter-$selectionModelType';
+
+  @override
   void attachTo(BaseChart<D> chart) {
     _chart = chart;
 
@@ -191,10 +194,6 @@ class LinePointHighlighter<D> implements ChartBehavior<D> {
     final newSeriesMap = LinkedHashMap<String, _AnimatedPoint<D>>();
 
     for (final detail in selectedDatumDetails) {
-      if (detail == null) {
-        continue;
-      }
-
       final series = detail.series!;
       final Object? datum = detail.datum;
 
@@ -273,9 +272,114 @@ class LinePointHighlighter<D> implements ChartBehavior<D> {
     _seriesPointMap = newSeriesMap;
     _view.seriesPointMap = _seriesPointMap;
   }
+}
 
-  @override
-  String get role => 'LinePointHighlighter-$selectionModelType';
+/// Type of follow line(s) to draw.
+enum LinePointHighlighterFollowLineType {
+  /// Draw a follow line for only the nearest point in the selection.
+  nearest,
+
+  /// Draw no follow lines.
+  none,
+
+  /// Draw a follow line for every point in the selection.
+  all,
+}
+
+/// Helper class that exposes fewer private internal properties for unit tests.
+@visibleForTesting
+class LinePointHighlighterTester<D> {
+  final LinePointHighlighter<D> behavior;
+
+  LinePointHighlighterTester(this.behavior);
+
+  int getSelectionLength() => behavior._seriesPointMap.length;
+
+  bool isDatumSelected(D datum) => behavior._seriesPointMap.values
+      .any((point) => point._currentPoint!.point.datum == datum);
+}
+
+class _AnimatedPoint<D> {
+  final String key;
+  final bool overlaySeries;
+
+  _PointRendererElement<D>? _previousPoint;
+  late _PointRendererElement<D> _targetPoint;
+  _PointRendererElement<D>? _currentPoint;
+
+  // Flag indicating whether this point is being animated out of the chart.
+  bool animatingOut = false;
+
+  _AnimatedPoint({required this.key, required this.overlaySeries});
+
+  /// Animates a point that was removed from the series out of the view.
+  ///
+  /// This should be called in place of "setNewTarget" for points that represent
+  /// data that has been removed from the series.
+  ///
+  /// Animates the height of the point down to the measure axis position
+  /// (position of 0).
+  void animateOut() {
+    final newTarget = _currentPoint!.clone();
+
+    // Set the target measure value to the axis position for all points.
+    final targetPoint = newTarget.point;
+
+    final newPoint = _DatumPoint<D>.from(targetPoint, targetPoint.x,
+        newTarget.measureAxisPosition!.roundToDouble());
+
+    newTarget.point = newPoint;
+
+    // Animate the radius to 0 so that we don't get a lingering point after
+    // animation is done.
+    newTarget.radiusPx = 0.0;
+
+    setNewTarget(newTarget);
+    animatingOut = true;
+  }
+
+  _PointRendererElement<D> getCurrentPoint(double animationPercent) {
+    if (animationPercent == 1.0 || _previousPoint == null) {
+      _currentPoint = _targetPoint;
+      _previousPoint = _targetPoint;
+      return _currentPoint!;
+    }
+
+    _currentPoint!.updateAnimationPercent(
+        _previousPoint!, _targetPoint, animationPercent);
+
+    return _currentPoint!;
+  }
+
+  void setNewTarget(_PointRendererElement<D> newTarget) {
+    animatingOut = false;
+    _currentPoint ??= newTarget.clone();
+    _previousPoint = _currentPoint!.clone();
+    _targetPoint = newTarget;
+  }
+}
+
+class _DatumPoint<D> extends NullablePoint {
+  final dynamic datum;
+  final D? domain;
+  final ImmutableSeries<D>? series;
+
+  _DatumPoint({
+    this.datum,
+    this.domain,
+    this.series,
+    double? x,
+    double? y,
+  }) : super(x, y);
+
+  factory _DatumPoint.from(_DatumPoint<D> other, [double? x, double? y]) {
+    return _DatumPoint<D>(
+        datum: other.datum,
+        domain: other.domain,
+        series: other.series,
+        x: x ?? other.x,
+        y: y ?? other.y);
+  }
 }
 
 class _LinePointLayoutView<D> extends LayoutView {
@@ -291,8 +395,6 @@ class _LinePointLayoutView<D> extends LayoutView {
   final List<int>? dashPattern;
 
   late Rectangle<int> _drawAreaBounds;
-
-  Rectangle<int> get drawBounds => _drawAreaBounds;
 
   final bool drawFollowLinesAcrossChart;
 
@@ -320,18 +422,26 @@ class _LinePointLayoutView<D> extends LayoutView {
             position: LayoutPosition.DrawArea,
             positionOrder: layoutPaintOrder);
 
+  @override
+  Rectangle<int> get componentBounds => _drawAreaBounds;
+
+  Rectangle<int> get drawBounds => _drawAreaBounds;
+
+  @override
+  bool get isSeriesRenderer => false;
+
   set seriesPointMap(LinkedHashMap<String, _AnimatedPoint<D>>? value) {
     _seriesPointMap = value;
   }
 
   @override
-  ViewMeasuredSizes? measure(int maxWidth, int maxHeight) {
-    return null;
+  void layout(Rectangle<int> componentBounds, Rectangle<int> drawAreaBounds) {
+    _drawAreaBounds = drawAreaBounds;
   }
 
   @override
-  void layout(Rectangle<int> componentBounds, Rectangle<int> drawAreaBounds) {
-    _drawAreaBounds = drawAreaBounds;
+  ViewMeasuredSizes? measure(int maxWidth, int maxHeight) {
+    return null;
   }
 
   @override
@@ -515,35 +625,6 @@ class _LinePointLayoutView<D> extends LayoutView {
           strokeWidthPx: pointElement.strokeWidthPx);
     }
   }
-
-  @override
-  Rectangle<int> get componentBounds => _drawAreaBounds;
-
-  @override
-  bool get isSeriesRenderer => false;
-}
-
-class _DatumPoint<D> extends NullablePoint {
-  final dynamic datum;
-  final D? domain;
-  final ImmutableSeries<D>? series;
-
-  _DatumPoint({
-    this.datum,
-    this.domain,
-    this.series,
-    double? x,
-    double? y,
-  }) : super(x, y);
-
-  factory _DatumPoint.from(_DatumPoint<D> other, [double? x, double? y]) {
-    return _DatumPoint<D>(
-        datum: other.datum,
-        domain: other.domain,
-        series: other.series,
-        x: x ?? other.x,
-        y: y ?? other.y);
-  }
 }
 
 class _PointRendererElement<D> {
@@ -616,89 +697,4 @@ class _PointRendererElement<D> {
     if (a == null || b == null) return null;
     return a + (b - a) * t;
   }
-}
-
-class _AnimatedPoint<D> {
-  final String key;
-  final bool overlaySeries;
-
-  _PointRendererElement<D>? _previousPoint;
-  late _PointRendererElement<D> _targetPoint;
-  _PointRendererElement<D>? _currentPoint;
-
-  // Flag indicating whether this point is being animated out of the chart.
-  bool animatingOut = false;
-
-  _AnimatedPoint({required this.key, required this.overlaySeries});
-
-  /// Animates a point that was removed from the series out of the view.
-  ///
-  /// This should be called in place of "setNewTarget" for points that represent
-  /// data that has been removed from the series.
-  ///
-  /// Animates the height of the point down to the measure axis position
-  /// (position of 0).
-  void animateOut() {
-    final newTarget = _currentPoint!.clone();
-
-    // Set the target measure value to the axis position for all points.
-    final targetPoint = newTarget.point;
-
-    final newPoint = _DatumPoint<D>.from(targetPoint, targetPoint.x,
-        newTarget.measureAxisPosition!.roundToDouble());
-
-    newTarget.point = newPoint;
-
-    // Animate the radius to 0 so that we don't get a lingering point after
-    // animation is done.
-    newTarget.radiusPx = 0.0;
-
-    setNewTarget(newTarget);
-    animatingOut = true;
-  }
-
-  void setNewTarget(_PointRendererElement<D> newTarget) {
-    animatingOut = false;
-    _currentPoint ??= newTarget.clone();
-    _previousPoint = _currentPoint!.clone();
-    _targetPoint = newTarget;
-  }
-
-  _PointRendererElement<D> getCurrentPoint(double animationPercent) {
-    if (animationPercent == 1.0 || _previousPoint == null) {
-      _currentPoint = _targetPoint;
-      _previousPoint = _targetPoint;
-      return _currentPoint!;
-    }
-
-    _currentPoint!.updateAnimationPercent(
-        _previousPoint!, _targetPoint, animationPercent);
-
-    return _currentPoint!;
-  }
-}
-
-/// Type of follow line(s) to draw.
-enum LinePointHighlighterFollowLineType {
-  /// Draw a follow line for only the nearest point in the selection.
-  nearest,
-
-  /// Draw no follow lines.
-  none,
-
-  /// Draw a follow line for every point in the selection.
-  all,
-}
-
-/// Helper class that exposes fewer private internal properties for unit tests.
-@visibleForTesting
-class LinePointHighlighterTester<D> {
-  final LinePointHighlighter<D> behavior;
-
-  LinePointHighlighterTester(this.behavior);
-
-  int getSelectionLength() => behavior._seriesPointMap.length;
-
-  bool isDatumSelected(D datum) => behavior._seriesPointMap.values
-      .any((point) => point._currentPoint!.point.datum == datum);
 }
