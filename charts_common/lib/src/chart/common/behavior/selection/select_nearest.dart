@@ -25,6 +25,20 @@ import '../../selection_model/selection_model.dart' show SelectionModelType;
 import '../../series_datum.dart' show SeriesDatum;
 import 'selection_trigger.dart' show SelectionTrigger;
 
+/// Mode for expanding the selection beyond just the nearest datum.
+enum SelectionMode {
+  /// All data sharing the same domain value as the nearest datum will be
+  /// selected (in charts that have a concept of domain).
+  expandToDomain,
+
+  /// All data for overlapping points in a series will be selected.
+  selectOverlapping,
+
+  /// Select only the nearest datum selected by the chart. This is the default
+  /// mode.
+  single,
+}
+
 /// Chart behavior that listens to the given eventTrigger and updates the
 /// specified [SelectionModel]. This is used to pair input events to behaviors
 /// that listen to selection changes.
@@ -145,93 +159,34 @@ class SelectNearest<D> implements ChartBehavior<D> {
     }
   }
 
-  bool _onTapTest(Point<double> chartPoint) {
-    // If the tap is within the drawArea, then claim the event from others.
-    _delaySelect = eventTrigger == SelectionTrigger.longPressHold;
-    return _chart!.pointWithinRenderer(chartPoint);
-  }
+  @override
+  String get role => 'SelectNearest-$selectionModelType';
 
-  bool _onLongPressSelect(Point<double> chartPoint) {
-    _delaySelect = false;
-    return _onSelect(chartPoint);
-  }
+  @override
+  void attachTo(BaseChart<D> chart) {
+    _chart = chart;
+    chart.addGestureListener(_listener);
 
-  bool _onSelect(Point<double> chartPoint, [double? ignored]) {
-    // If _chart has not yet been attached, then quit.
-    if (_chart == null) return false;
-
-    // If the selection is delayed (waiting for long press), then quit early.
-    if (_delaySelect) return false;
-
-    var details = _chart!.getNearestDatumDetailPerSeries(
-        chartPoint, selectAcrossAllSeriesRendererComponents);
-
-    final seriesList = <ImmutableSeries<D>>[];
-    var seriesDatumList = <SeriesDatum<D>>[];
-
-    if (details != null && details.isNotEmpty) {
-      details.sort((a, b) => a.domainDistance!.compareTo(b.domainDistance!));
-
-      if (maximumDomainDistancePx == null ||
-          details[0].domainDistance! <= maximumDomainDistancePx!) {
-        seriesDatumList = _extractSeriesFromNearestSelection(details);
-
-        // Filter out points from overlay series.
-        seriesDatumList
-            .removeWhere((SeriesDatum<D> datum) => datum.series.overlaySeries);
-
-        if (selectClosestSeries && seriesList.isEmpty) {
-          if (details.first.series!.overlaySeries) {
-            // If the closest "details" was from an overlay series, grab the
-            // closest remaining series instead. In this case, we need to sort a
-            // copy of the list by domain distance because we do not want to
-            // re-order the actual return values here.
-            final sortedSeriesDatumList =
-                List<SeriesDatum<D>>.from(seriesDatumList);
-            sortedSeriesDatumList.sort((a, b) {
-              final detailsA = a.datum as DatumDetails<D>;
-              final detailsB = b.datum as DatumDetails<D>;
-              return detailsA.domainDistance!
-                  .compareTo(detailsB.domainDistance!);
-            });
-            seriesList.add(sortedSeriesDatumList.first.series);
-          } else {
-            seriesList.add(details.first.series!);
-          }
-        }
-      }
-    }
-
-    return _chart!
-        .getSelectionModel(selectionModelType)
-        .updateSelection(seriesDatumList, seriesList);
-  }
-
-  List<SeriesDatum<D>> _extractSeriesFromNearestSelection(
-      List<DatumDetails<D>> details) {
-    switch (selectionMode) {
-      case SelectionMode.expandToDomain:
-        return _expandToDomain(details.first);
-      case SelectionMode.selectOverlapping:
-        return details
-            .map((datumDetails) =>
-                SeriesDatum<D>(datumDetails.series!, datumDetails.datum))
-            .toList();
-      case SelectionMode.single:
-        return [SeriesDatum<D>(details.first.series!, details.first.datum)];
+    // TODO: Update this dynamically based on tappable location.
+    switch (eventTrigger) {
+      case SelectionTrigger.tap:
+      case SelectionTrigger.tapAndDrag:
+      case SelectionTrigger.pressHold:
+      case SelectionTrigger.longPressHold:
+        chart.registerTappable(this);
+        break;
+      case SelectionTrigger.hover:
+      default:
+        chart.unregisterTappable(this);
+        break;
     }
   }
 
-  bool _onDeselectAll(Point<double> _, double __, double ___) {
-    // If the selection is delayed (waiting for long press), then quit early.
-    if (_delaySelect) {
-      return false;
-    }
-
-    _chart!
-        .getSelectionModel(selectionModelType)
-        .updateSelection(<SeriesDatum<D>>[], <ImmutableSeries<D>>[]);
-    return false;
+  @override
+  void removeFrom(BaseChart<D> chart) {
+    chart.removeGestureListener(_listener);
+    chart.unregisterTappable(this);
+    _chart = null;
   }
 
   List<SeriesDatum<D>> _expandToDomain(DatumDetails<D> nearestDetails) {
@@ -294,47 +249,92 @@ class SelectNearest<D> implements ChartBehavior<D> {
     return data;
   }
 
-  @override
-  void attachTo(BaseChart<D> chart) {
-    _chart = chart;
-    chart.addGestureListener(_listener);
-
-    // TODO: Update this dynamically based on tappable location.
-    switch (eventTrigger) {
-      case SelectionTrigger.tap:
-      case SelectionTrigger.tapAndDrag:
-      case SelectionTrigger.pressHold:
-      case SelectionTrigger.longPressHold:
-        chart.registerTappable(this);
-        break;
-      case SelectionTrigger.hover:
-      default:
-        chart.unregisterTappable(this);
-        break;
+  List<SeriesDatum<D>> _extractSeriesFromNearestSelection(
+      List<DatumDetails<D>> details) {
+    switch (selectionMode) {
+      case SelectionMode.expandToDomain:
+        return _expandToDomain(details.first);
+      case SelectionMode.selectOverlapping:
+        return details
+            .map((datumDetails) =>
+                SeriesDatum<D>(datumDetails.series!, datumDetails.datum))
+            .toList();
+      case SelectionMode.single:
+        return [SeriesDatum<D>(details.first.series!, details.first.datum)];
     }
   }
 
-  @override
-  void removeFrom(BaseChart<D> chart) {
-    chart.removeGestureListener(_listener);
-    chart.unregisterTappable(this);
-    _chart = null;
+  bool _onDeselectAll(Point<double> _, double __, double ___) {
+    // If the selection is delayed (waiting for long press), then quit early.
+    if (_delaySelect) {
+      return false;
+    }
+
+    _chart!
+        .getSelectionModel(selectionModelType)
+        .updateSelection(<SeriesDatum<D>>[], <ImmutableSeries<D>>[]);
+    return false;
   }
 
-  @override
-  String get role => 'SelectNearest-$selectionModelType';
-}
+  bool _onLongPressSelect(Point<double> chartPoint) {
+    _delaySelect = false;
+    return _onSelect(chartPoint);
+  }
 
-/// Mode for expanding the selection beyond just the nearest datum.
-enum SelectionMode {
-  /// All data sharing the same domain value as the nearest datum will be
-  /// selected (in charts that have a concept of domain).
-  expandToDomain,
+  bool _onSelect(Point<double> chartPoint, [double? ignored]) {
+    // If _chart has not yet been attached, then quit.
+    if (_chart == null) return false;
 
-  /// All data for overlapping points in a series will be selected.
-  selectOverlapping,
+    // If the selection is delayed (waiting for long press), then quit early.
+    if (_delaySelect) return false;
 
-  /// Select only the nearest datum selected by the chart. This is the default
-  /// mode.
-  single,
+    var details = _chart!.getNearestDatumDetailPerSeries(
+        chartPoint, selectAcrossAllSeriesRendererComponents);
+
+    final seriesList = <ImmutableSeries<D>>[];
+    var seriesDatumList = <SeriesDatum<D>>[];
+
+    if (details.isNotEmpty) {
+      details.sort((a, b) => a.domainDistance!.compareTo(b.domainDistance!));
+
+      if (maximumDomainDistancePx == null ||
+          details[0].domainDistance! <= maximumDomainDistancePx!) {
+        seriesDatumList = _extractSeriesFromNearestSelection(details);
+
+        // Filter out points from overlay series.
+        seriesDatumList
+            .removeWhere((SeriesDatum<D> datum) => datum.series.overlaySeries);
+
+        if (selectClosestSeries && seriesList.isEmpty) {
+          if (details.first.series!.overlaySeries) {
+            // If the closest "details" was from an overlay series, grab the
+            // closest remaining series instead. In this case, we need to sort a
+            // copy of the list by domain distance because we do not want to
+            // re-order the actual return values here.
+            final sortedSeriesDatumList =
+                List<SeriesDatum<D>>.from(seriesDatumList);
+            sortedSeriesDatumList.sort((a, b) {
+              final detailsA = a.datum as DatumDetails<D>;
+              final detailsB = b.datum as DatumDetails<D>;
+              return detailsA.domainDistance!
+                  .compareTo(detailsB.domainDistance!);
+            });
+            seriesList.add(sortedSeriesDatumList.first.series);
+          } else {
+            seriesList.add(details.first.series!);
+          }
+        }
+      }
+    }
+
+    return _chart!
+        .getSelectionModel(selectionModelType)
+        .updateSelection(seriesDatumList, seriesList);
+  }
+
+  bool _onTapTest(Point<double> chartPoint) {
+    // If the tap is within the drawArea, then claim the event from others.
+    _delaySelect = eventTrigger == SelectionTrigger.longPressHold;
+    return _chart!.pointWithinRenderer(chartPoint);
+  }
 }
