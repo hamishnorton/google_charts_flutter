@@ -89,6 +89,29 @@ class DateTimeTickFormatter implements TickFormatter<DateTime> {
     return DateTimeTickFormatter._internal(map);
   }
 
+  /// Creates a [DateTimeTickFormatter] that formats all ticks the same.
+  ///
+  /// Only use this formatter for data with fixed intervals, otherwise use the
+  /// default, or build from scratch.
+  ///
+  /// [formatter] The format for all ticks.
+  factory DateTimeTickFormatter.uniform(TimeTickFormatter formatter) {
+    return DateTimeTickFormatter._internal({ANY: formatter});
+  }
+
+  /// Creates a [DateTimeTickFormatter] that formats ticks with [formatters].
+  ///
+  /// The formatters are expected to be provided with keys in increasing order.
+  factory DateTimeTickFormatter.withFormatters(
+      Map<int, TimeTickFormatter> formatters) {
+    // Formatters must be non empty.
+    if (formatters.isEmpty) {
+      throw ArgumentError('At least one TimeTickFormatter is required.');
+    }
+
+    return DateTimeTickFormatter._internal(formatters);
+  }
+
   /// Creates a [DateTimeTickFormatter] without the time component.
   factory DateTimeTickFormatter.withoutTime(DateTimeFactory dateTimeFactory) {
     return DateTimeTickFormatter._internal({
@@ -108,29 +131,6 @@ class DateTimeTickFormatter implements TickFormatter<DateTime> {
           transitionFormat: 'yyyy',
           transitionField: CalendarField.year),
     });
-  }
-
-  /// Creates a [DateTimeTickFormatter] that formats all ticks the same.
-  ///
-  /// Only use this formatter for data with fixed intervals, otherwise use the
-  /// default, or build from scratch.
-  ///
-  /// [formatter] The format for all ticks.
-  factory DateTimeTickFormatter.uniform(TimeTickFormatter formatter) {
-    return DateTimeTickFormatter._internal({ANY: formatter});
-  }
-
-  /// Creates a [DateTimeTickFormatter] that formats ticks with [formatters].
-  ///
-  /// The formatters are expected to be provided with keys in increasing order.
-  factory DateTimeTickFormatter.withFormatters(
-      Map<int, TimeTickFormatter> formatters) {
-    // Formatters must be non empty.
-    if (formatters == null || formatters.isEmpty) {
-      throw ArgumentError('At least one TimeTickFormatter is required.');
-    }
-
-    return DateTimeTickFormatter._internal(formatters);
   }
 
   DateTimeTickFormatter._internal(this._timeFormatters) {
