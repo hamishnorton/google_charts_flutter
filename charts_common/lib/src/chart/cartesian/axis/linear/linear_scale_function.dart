@@ -45,6 +45,19 @@ class LinearScaleFunction {
         .toDouble();
   }
 
+  /// Returns the percentage of the step reserved from the output range due to
+  /// maybe having to hold half stepSizes on the start and end of the output.
+  double getStepReservationPercent(
+      bool hasHalfStepAtStart, bool hasHalfStepAtEnd) {
+    if (!hasHalfStepAtStart && !hasHalfStepAtEnd) {
+      return 0.0;
+    }
+    if (hasHalfStepAtStart && hasHalfStepAtEnd) {
+      return 1.0;
+    }
+    return 0.5;
+  }
+
   /// Translates the given range output back to a domainValue.
   double reverse(double viewPixels) {
     return ((viewPixels - rangeTranslate) / scalingFactor) - domainTranslate;
@@ -71,19 +84,6 @@ class LinearScaleFunction {
         getStepReservationPercent(hasHalfStepAtStart, hasHalfStepAtEnd);
     _updateStepSizeAndScaleFactor(viewportSettings, domainInfo, rangeDiff,
         reservedRangePercentOfStep, rangeBandConfig, stepSizeConfig);
-  }
-
-  /// Returns the percentage of the step reserved from the output range due to
-  /// maybe having to hold half stepSizes on the start and end of the output.
-  double getStepReservationPercent(
-      bool hasHalfStepAtStart, bool hasHalfStepAtEnd) {
-    if (!hasHalfStepAtStart && !hasHalfStepAtEnd) {
-      return 0.0;
-    }
-    if (hasHalfStepAtStart && hasHalfStepAtEnd) {
-      return 1.0;
-    }
-    return 0.5;
   }
 
   /// Updates the scale function's translate and rangeBand given the current
@@ -156,8 +156,7 @@ class LinearScaleFunction {
         case StepSizeType.autoDetect:
           final minimumDetectedDomainStep =
               domainInfo.minimumDetectedDomainStep.toDouble();
-          if (minimumDetectedDomainStep != null &&
-              minimumDetectedDomainStep.isFinite) {
+          if (minimumDetectedDomainStep.isFinite) {
             scalingFactor = viewportSettings.scalingFactor *
                 (rangeDiff /
                     (domainDiff +
