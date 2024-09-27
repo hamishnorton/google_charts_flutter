@@ -34,6 +34,15 @@ class PieChart<D> extends BaseChart<D> {
   PieChart({LayoutConfig? layoutConfig})
       : super(layoutConfig: layoutConfig ?? _defaultLayoutConfig);
 
+  Rectangle<int>? get centerContentBounds {
+    final defaultRenderer = this.defaultRenderer;
+    if (defaultRenderer is ArcRenderer<D>) {
+      return defaultRenderer.centerContentBounds;
+    } else {
+      return null;
+    }
+  }
+
   @override
   void drawInternal(List<MutableSeries<D>> seriesList,
       {bool? skipAnimation, bool? skipLayout}) {
@@ -42,16 +51,6 @@ class PieChart<D> extends BaseChart<D> {
     }
     super.drawInternal(seriesList,
         skipAnimation: skipAnimation, skipLayout: skipLayout);
-  }
-
-  @override
-  void updateConfig(LayoutConfig? layoutConfig) {
-    super.updateConfig(layoutConfig ?? _defaultLayoutConfig);
-  }
-
-  @override
-  SeriesRenderer<D> makeDefaultRenderer() {
-    return ArcRenderer<D>()..rendererId = SeriesRenderer.defaultRendererId;
   }
 
   /// Returns a list of datum details from selection model of [type].
@@ -70,20 +69,19 @@ class PieChart<D> extends BaseChart<D> {
 
       final details = renderer.getExpandedDatumDetails(seriesDatum);
 
-      if (details != null) {
-        entries.add(details);
-      }
+      entries.add(details);
     }
 
     return entries;
   }
 
-  Rectangle<int>? get centerContentBounds {
-    final defaultRenderer = this.defaultRenderer;
-    if (defaultRenderer is ArcRenderer<D>) {
-      return defaultRenderer.centerContentBounds;
-    } else {
-      return null;
-    }
+  @override
+  SeriesRenderer<D> makeDefaultRenderer() {
+    return ArcRenderer<D>()..rendererId = SeriesRenderer.defaultRendererId;
+  }
+
+  @override
+  void updateConfig(LayoutConfig? layoutConfig) {
+    super.updateConfig(layoutConfig ?? _defaultLayoutConfig);
   }
 }
