@@ -127,47 +127,6 @@ class NumericTickProvider extends BaseTickProvider<num> {
   int? _minTickCount;
   int? _maxTickCount;
 
-  /// Sets the desired tick count.
-  ///
-  /// While the provider will try to satisfy the requirement, it is not
-  /// guaranteed, such as cases where ticks may overlap or are insufficient.
-  ///
-  /// [tickCount] the fixed number of major (labeled) ticks to draw for the axis
-  /// Passing null will result in falling back on the automatic tick count
-  /// assignment.
-  void setFixedTickCount(int? tickCount) {
-    // Don't allow a single tick, it doesn't make sense. so tickCount > 1
-    _desiredMinTickCount =
-        tickCount != null && tickCount > 1 ? tickCount : null;
-    _desiredMaxTickCount = _desiredMinTickCount;
-  }
-
-  /// Sets the desired min and max tick count when providing ticks.
-  ///
-  /// The values are suggested requirements but are not guaranteed to be the
-  /// actual tick count in cases where it is not possible.
-  ///
-  /// [maxTickCount] The max tick count must be greater than 1.
-  /// [minTickCount] The min tick count must be greater than 1.
-  void setTickCount(int maxTickCount, int minTickCount) {
-    // Don't allow a single tick, it doesn't make sense. so tickCount > 1
-    if (maxTickCount != null && maxTickCount > 1) {
-      _desiredMaxTickCount = maxTickCount;
-      if (minTickCount != null &&
-          minTickCount > 1 &&
-          minTickCount <= _desiredMaxTickCount!) {
-        _desiredMinTickCount = minTickCount;
-      } else {
-        _desiredMinTickCount = 2;
-      }
-    } else {
-      _desiredMaxTickCount = null;
-      _desiredMinTickCount = null;
-    }
-
-    assert((_desiredMinTickCount == null) == (_desiredMaxTickCount == null));
-  }
-
   /// Sets the allowed step sizes this tick provider can choose from.
   ///
   /// All ticks will be a power of 10 multiple of the given step sizes.
@@ -180,7 +139,7 @@ class NumericTickProvider extends BaseTickProvider<num> {
   ///
   /// [steps] allowed step sizes in the [1, 10) range.
   set allowedSteps(List<double> steps) {
-    assert(steps != null && steps.isNotEmpty);
+    assert(steps.isNotEmpty);
     steps.sort();
 
     final stepSet = Set.of(steps);
@@ -195,39 +154,6 @@ class NumericTickProvider extends BaseTickProvider<num> {
           _removeRoundingErrors(step);
       stepIndex++;
     }
-  }
-
-  List<Tick<num>> _getTicksFromHint({
-    required ChartContext? context,
-    required GraphicsFactory graphicsFactory,
-    required NumericScale scale,
-    required TickFormatter<num> formatter,
-    required Map<num, String> formatterValueCache,
-    required TickDrawStrategy<num> tickDrawStrategy,
-    required TickHint<num> tickHint,
-  }) {
-    final stepSize = (tickHint.end - tickHint.start) / (tickHint.tickCount - 1);
-    // Find the first tick that is greater than or equal to the min
-    // viewportDomain.
-    final tickZeroShift = tickHint.start.toDouble() -
-        (stepSize *
-            (tickHint.start >= 0
-                ? (tickHint.start / stepSize).floor()
-                : (tickHint.start / stepSize).ceil()));
-    final tickStart =
-        (scale.viewportDomain.min / stepSize).ceil() * stepSize + tickZeroShift;
-    final stepInfo = _TickStepInfo(stepSize.abs(), tickStart);
-    final tickValues = _getTickValues(stepInfo, tickHint.tickCount);
-
-    // Create ticks from domain values.
-    return createTicks(tickValues,
-        context: context,
-        graphicsFactory: graphicsFactory,
-        scale: scale,
-        formatter: formatter,
-        formatterValueCache: formatterValueCache,
-        tickDrawStrategy: tickDrawStrategy,
-        stepSize: stepInfo.stepSize);
   }
 
   @override
@@ -338,39 +264,43 @@ class NumericTickProvider extends BaseTickProvider<num> {
     return ticks;
   }
 
-  /// Calculates the domain extents that this provider will cover based on the
-  /// axis extents passed in and the settings in the numeric tick provider.
-  /// Stores the domain extents in [_low] and [_high].
-  void _updateDomainExtents(NumericExtents axisExtents) {
-    _low = axisExtents.min;
-    _high = axisExtents.max;
+  /// Sets the desired tick count.
+  ///
+  /// While the provider will try to satisfy the requirement, it is not
+  /// guaranteed, such as cases where ticks may overlap or are insufficient.
+  ///
+  /// [tickCount] the fixed number of major (labeled) ticks to draw for the axis
+  /// Passing null will result in falling back on the automatic tick count
+  /// assignment.
+  void setFixedTickCount(int? tickCount) {
+    // Don't allow a single tick, it doesn't make sense. so tickCount > 1
+    _desiredMinTickCount =
+        tickCount != null && tickCount > 1 ? tickCount : null;
+    _desiredMaxTickCount = _desiredMinTickCount;
+  }
 
-    // Correct the extents for zero bound
-    if (zeroBound) {
-      _low = _low > 0.0 ? 0.0 : _low;
-      _high = _high < 0.0 ? 0.0 : _high;
-    }
-
-    // Correct cases where high and low equal to give the tick provider an
-    // actual range to go off of when picking ticks.
-    if (_high == _low) {
-      if (_high == 0.0) {
-        // Corner case: the only values we've seen are zero, so lets just say
-        // the high is 1 and leave the low at zero.
-        _high = 1.0;
+  /// Sets the desired min and max tick count when providing ticks.
+  ///
+  /// The values are suggested requirements but are not guaranteed to be the
+  /// actual tick count in cases where it is not possible.
+  ///
+  /// [maxTickCount] The max tick count must be greater than 1.
+  /// [minTickCount] The min tick count must be greater than 1.
+  void setTickCount(int maxTickCount, int minTickCount) {
+    // Don't allow a single tick, it doesn't make sense. so tickCount > 1
+    if (maxTickCount > 1) {
+      _desiredMaxTickCount = maxTickCount;
+      if (minTickCount > 1 && minTickCount <= _desiredMaxTickCount!) {
+        _desiredMinTickCount = minTickCount;
       } else {
-        // The values are all the same, so assume a range of -5% to +5% from the
-        // single value.
-        if (_high > 0.0) {
-          _high *= 1.05;
-          _low *= 0.95;
-        } else {
-          // (_high == _low) < 0
-          _high *= 0.95;
-          _low *= 1.05;
-        }
+        _desiredMinTickCount = 2;
       }
+    } else {
+      _desiredMaxTickCount = null;
+      _desiredMinTickCount = null;
     }
+
+    assert((_desiredMinTickCount == null) == (_desiredMaxTickCount == null));
   }
 
   /// Given [tickCount] and the domain range, finds the smallest tick increment,
@@ -464,6 +394,39 @@ class NumericTickProvider extends BaseTickProvider<num> {
     return _TickStepInfo(1.0, low.floorToDouble());
   }
 
+  List<Tick<num>> _getTicksFromHint({
+    required ChartContext? context,
+    required GraphicsFactory graphicsFactory,
+    required NumericScale scale,
+    required TickFormatter<num> formatter,
+    required Map<num, String> formatterValueCache,
+    required TickDrawStrategy<num> tickDrawStrategy,
+    required TickHint<num> tickHint,
+  }) {
+    final stepSize = (tickHint.end - tickHint.start) / (tickHint.tickCount - 1);
+    // Find the first tick that is greater than or equal to the min
+    // viewportDomain.
+    final tickZeroShift = tickHint.start.toDouble() -
+        (stepSize *
+            (tickHint.start >= 0
+                ? (tickHint.start / stepSize).floor()
+                : (tickHint.start / stepSize).ceil()));
+    final tickStart =
+        (scale.viewportDomain.min / stepSize).ceil() * stepSize + tickZeroShift;
+    final stepInfo = _TickStepInfo(stepSize.abs(), tickStart);
+    final tickValues = _getTickValues(stepInfo, tickHint.tickCount);
+
+    // Create ticks from domain values.
+    return createTicks(tickValues,
+        context: context,
+        graphicsFactory: graphicsFactory,
+        scale: scale,
+        formatter: formatter,
+        formatterValueCache: formatterValueCache,
+        tickDrawStrategy: tickDrawStrategy,
+        stepSize: stepInfo.stepSize);
+  }
+
   List<double> _getTickValues(_TickStepInfo steps, int tickCount) {
     // We have our size and start, assign all the tick values to the given array.
     return [
@@ -473,6 +436,41 @@ class NumericTickProvider extends BaseTickProvider<num> {
                 _removeRoundingErrors(steps.tickStart + (i * steps.stepSize)))
             .toDouble(),
     ];
+  }
+
+  /// Calculates the domain extents that this provider will cover based on the
+  /// axis extents passed in and the settings in the numeric tick provider.
+  /// Stores the domain extents in [_low] and [_high].
+  void _updateDomainExtents(NumericExtents axisExtents) {
+    _low = axisExtents.min;
+    _high = axisExtents.max;
+
+    // Correct the extents for zero bound
+    if (zeroBound) {
+      _low = _low > 0.0 ? 0.0 : _low;
+      _high = _high < 0.0 ? 0.0 : _high;
+    }
+
+    // Correct cases where high and low equal to give the tick provider an
+    // actual range to go off of when picking ticks.
+    if (_high == _low) {
+      if (_high == 0.0) {
+        // Corner case: the only values we've seen are zero, so lets just say
+        // the high is 1 and leave the low at zero.
+        _high = 1.0;
+      } else {
+        // The values are all the same, so assume a range of -5% to +5% from the
+        // single value.
+        if (_high > 0.0) {
+          _high *= 1.05;
+          _low *= 0.95;
+        } else {
+          // (_high == _low) < 0
+          _high *= 0.95;
+          _low *= 1.05;
+        }
+      }
+    }
   }
 
   /// Given the axisDimensions update the tick counts given they are not fixed.
