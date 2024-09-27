@@ -22,6 +22,8 @@ import '../../selection_model/selection_model.dart' show SelectionModelType;
 import '../../series_datum.dart' show SeriesDatum;
 import '../chart_behavior.dart' show ChartBehavior;
 
+const NO_SELECTION = -1;
+
 /// Enable keyboard navigation of the chart when focused using the directional
 /// keys.
 ///
@@ -59,29 +61,17 @@ abstract class KeyboardDomainNavigator<D> implements ChartBehavior<D> {
   }
 
   @override
+  String get role => 'keyboard-domain-navigator';
+
+  @override
   void attachTo(BaseChart<D> chart) {
     _chart = chart;
     chart.addLifecycleListener(_lifecycleListener);
   }
 
-  @override
-  void removeFrom(BaseChart<D> chart) {
-    chart.removeLifecycleListener(_lifecycleListener);
-  }
-
-  /// Resets any hidden series data when new data is drawn on the chart.
-  @protected
-  void onData(List<MutableSeries<D>> _) {
-    _domains = null;
-    _datumPairs = null;
-    _currentIndex = NO_SELECTION;
-  }
-
-  @protected
-  bool handleEscape() {
-    _currentIndex = NO_SELECTION;
-    clearSelection();
-    return true;
+  /// Triggers when the Escape key is pressed or the chart loses focus.
+  void clearSelection() {
+    _selectDomainIndex(SelectionModelType.info, NO_SELECTION);
   }
 
   @protected
@@ -92,30 +82,9 @@ abstract class KeyboardDomainNavigator<D> implements ChartBehavior<D> {
   }
 
   @protected
-  bool handlePreviousDomain() {
-    // Lazily initialize selection domains when a key is pressed after a draw.
-    if (_datumPairs == null) {
-      _generateSelectionDomains();
-    }
-
-    final domainsLength = _datumPairs!.length;
-    if (domainsLength == 0) {
-      return false;
-    }
-
-    _currentIndex = _getActiveHoverDomainIndex();
-
-    // Navigate to the last domain when current index is NO_SELECTION.
-    if (_currentIndex == NO_SELECTION) {
-      _currentIndex = domainsLength - 1;
-    } else {
-      // Navigate to the previous index, or to NO_SELECTION when it would
-      // outreach the domain index.
-      _currentIndex = _currentIndex == 0 ? NO_SELECTION : _currentIndex - 1;
-    }
-
-    _doNavigate(_currentIndex);
-
+  bool handleEscape() {
+    _currentIndex = NO_SELECTION;
+    clearSelection();
     return true;
   }
 
@@ -147,9 +116,45 @@ abstract class KeyboardDomainNavigator<D> implements ChartBehavior<D> {
     return true;
   }
 
-  /// Triggers when the left or right arrow keys are pressed.
-  void _doNavigate(int domainIndex) {
-    _selectDomainIndex(SelectionModelType.info, domainIndex);
+  @protected
+  bool handlePreviousDomain() {
+    // Lazily initialize selection domains when a key is pressed after a draw.
+    if (_datumPairs == null) {
+      _generateSelectionDomains();
+    }
+
+    final domainsLength = _datumPairs!.length;
+    if (domainsLength == 0) {
+      return false;
+    }
+
+    _currentIndex = _getActiveHoverDomainIndex();
+
+    // Navigate to the last domain when current index is NO_SELECTION.
+    if (_currentIndex == NO_SELECTION) {
+      _currentIndex = domainsLength - 1;
+    } else {
+      // Navigate to the previous index, or to NO_SELECTION when it would
+      // outreach the domain index.
+      _currentIndex = _currentIndex == 0 ? NO_SELECTION : _currentIndex - 1;
+    }
+
+    _doNavigate(_currentIndex);
+
+    return true;
+  }
+
+  /// Resets any hidden series data when new data is drawn on the chart.
+  @protected
+  void onData(List<MutableSeries<D>> _) {
+    _domains = null;
+    _datumPairs = null;
+    _currentIndex = NO_SELECTION;
+  }
+
+  @override
+  void removeFrom(BaseChart<D> chart) {
+    chart.removeLifecycleListener(_lifecycleListener);
   }
 
   /// Triggers when the Enter or Space key is pressed.
@@ -157,77 +162,9 @@ abstract class KeyboardDomainNavigator<D> implements ChartBehavior<D> {
     _selectDomainIndex(SelectionModelType.action, domainIndex);
   }
 
-  /// Triggers when the Escape key is pressed or the chart loses focus.
-  void clearSelection() {
-    _selectDomainIndex(SelectionModelType.info, NO_SELECTION);
-  }
-
-  /// Updates the selection of the attached chart with the data at the given
-  /// domain index. If the chart doesn't support the given model, this is a
-  /// no-op.
-  @protected
-  bool _selectDomainIndex(
-      SelectionModelType selectionModelType, int domainIndex) {
-    final selectionModel = _chart.getSelectionModel(selectionModelType);
-    if (selectionModel == null) {
-      return false;
-    }
-
-    if (domainIndex == NO_SELECTION) {
-      selectionModel.clearSelection();
-    } else {
-      final datumPairs = _getDatumPairs(domainIndex);
-
-      final seriesDatumList = <SeriesDatum<D>>[];
-      final seriesList = <MutableSeries<D>>[];
-
-      for (final seriesDatum in datumPairs) {
-        seriesDatumList
-            .add(SeriesDatum<D>(seriesDatum.series, seriesDatum.datum));
-
-        if (!seriesList.contains(seriesDatum.series)) {
-          seriesList.add(seriesDatum.series as MutableSeries<D>);
-        }
-      }
-
-      selectionModel.updateSelection(seriesDatumList, seriesList);
-    }
-
-    return true;
-  }
-
-  /// Reads the current active index of the hover selection.
-  int _getActiveHoverDomainIndex() {
-    // If enter is pressed before an arrow key, we don't have any selection
-    // domains available. Bail out.
-    final _domains = this._domains;
-    if (_domains == null || _domains.isEmpty) {
-      return NO_SELECTION;
-    }
-
-    final selectionModel = _chart.getSelectionModel(SelectionModelType.info);
-
-    if (!selectionModel.hasAnySelection) {
-      return NO_SELECTION;
-    }
-
-    final details = _chart.getSelectedDatumDetails(SelectionModelType.info);
-
-    if (details.isEmpty) {
-      return NO_SELECTION;
-    }
-
-    // If the currentIndex is the same as the firstSelectedDetail we don't have
-    // to do a linear seach to find the domain.
-    final firstDomain = details.first.domain!;
-
-    if (0 <= _currentIndex &&
-        _currentIndex <= _domains.length - 1 &&
-        _domains[_currentIndex] == firstDomain) {
-      return _currentIndex;
-    }
-
-    return _domains.indexOf(firstDomain);
+  /// Triggers when the left or right arrow keys are pressed.
+  void _doNavigate(int domainIndex) {
+    _selectDomainIndex(SelectionModelType.info, domainIndex);
   }
 
   /// Processes chart data and generates a mapping of domain index to datum
@@ -289,12 +226,72 @@ abstract class KeyboardDomainNavigator<D> implements ChartBehavior<D> {
     _currentIndex = NO_SELECTION;
   }
 
+  /// Reads the current active index of the hover selection.
+  int _getActiveHoverDomainIndex() {
+    // If enter is pressed before an arrow key, we don't have any selection
+    // domains available. Bail out.
+    final _domains = this._domains;
+    if (_domains == null || _domains.isEmpty) {
+      return NO_SELECTION;
+    }
+
+    final selectionModel = _chart.getSelectionModel(SelectionModelType.info);
+
+    if (!selectionModel.hasAnySelection) {
+      return NO_SELECTION;
+    }
+
+    final details = _chart.getSelectedDatumDetails(SelectionModelType.info);
+
+    if (details.isEmpty) {
+      return NO_SELECTION;
+    }
+
+    // If the currentIndex is the same as the firstSelectedDetail we don't have
+    // to do a linear seach to find the domain.
+    final firstDomain = details.first.domain!;
+
+    if (0 <= _currentIndex &&
+        _currentIndex <= _domains.length - 1 &&
+        _domains[_currentIndex] == firstDomain) {
+      return _currentIndex;
+    }
+
+    return _domains.indexOf(firstDomain);
+  }
+
   /// Gets the datum/series pairs for the given domainIndex.
   List<SeriesDatum<D>> _getDatumPairs(int domainIndex) =>
       _datumPairs![domainIndex] ?? <SeriesDatum<D>>[];
 
-  @override
-  String get role => 'keyboard-domain-navigator';
-}
+  /// Updates the selection of the attached chart with the data at the given
+  /// domain index. If the chart doesn't support the given model, this is a
+  /// no-op.
+  @protected
+  bool _selectDomainIndex(
+      SelectionModelType selectionModelType, int domainIndex) {
+    final selectionModel = _chart.getSelectionModel(selectionModelType);
 
-const NO_SELECTION = -1;
+    if (domainIndex == NO_SELECTION) {
+      selectionModel.clearSelection();
+    } else {
+      final datumPairs = _getDatumPairs(domainIndex);
+
+      final seriesDatumList = <SeriesDatum<D>>[];
+      final seriesList = <MutableSeries<D>>[];
+
+      for (final seriesDatum in datumPairs) {
+        seriesDatumList
+            .add(SeriesDatum<D>(seriesDatum.series, seriesDatum.datum));
+
+        if (!seriesList.contains(seriesDatum.series)) {
+          seriesList.add(seriesDatum.series as MutableSeries<D>);
+        }
+      }
+
+      selectionModel.updateSelection(seriesDatumList, seriesList);
+    }
+
+    return true;
+  }
+}
