@@ -71,34 +71,149 @@ class SunburstArcRenderer<D> extends BaseArcRenderer<D> {
       : arcRendererDecorators = config.arcRendererDecorators,
         super(rendererId: rendererId, config: config);
 
+  /// Assigns one color pallet for each subtree from the children of the root
+  /// node, and one shade for each node of the subtree to series that are
+  /// missing their colorFn.
+  @override
+  void assignMissingColors(Iterable<MutableSeries<D>> seriesList,
+      {required bool emptyCategoryUsesSinglePalette}) {
+    seriesList.forEach((series) {
+      if (series.colorFn == null) {
+        final root = series.data.first as TreeNode<D>;
+        final firstLevelChildren = (series.data.first as TreeNode<D>).children;
+
+        // Create number of palettes based on the first level children of root.
+        final colorPalettes =
+            StyleFactory.style.getOrderedPalettes(root.children.length);
+        final nodeToColorMap = {};
+
+        // Create shades base on number of Nodes in the subtree
+        if (config.colorAssignmentStrategy ==
+            SunburstColorStrategy.newShadePerArc) {
+          for (var i = 0; i < firstLevelChildren.length; i++) {
+            var numOfNodeInSubTree = 0;
+            firstLevelChildren.elementAt(i).visit((node) {
+              numOfNodeInSubTree++;
+            });
+
+            final colorList = colorPalettes[i].makeShades(numOfNodeInSubTree);
+
+            // Fill in node to color map to be used in the colorFn
+            numOfNodeInSubTree = 0;
+            firstLevelChildren.elementAt(i).visit((node) {
+              nodeToColorMap[node] = colorList[numOfNodeInSubTree];
+              numOfNodeInSubTree++;
+            });
+          }
+        } else {
+          // Create number of shades based on the full depth of the tree instead
+          // of each subtree, so the shades of each branch looks more aligned
+          // at each level.
+          var depthOfTree = 0;
+          root.visit((node) {
+            depthOfTree = max(depthOfTree, node.depth);
+          });
+
+          for (var i = 0; i < firstLevelChildren.length; i++) {
+            final colorList = colorPalettes[i].makeShades(depthOfTree);
+
+            // Fill in node to color map to be used in the colorFn
+            firstLevelChildren.elementAt(i).visit((node) {
+              nodeToColorMap[node] = colorList[node.depth - 1];
+            });
+          }
+        }
+        series.colorFn ??=
+            (index) => nodeToColorMap[series.data[index!]] ?? Color.black;
+      }
+    });
+  }
+
+  // Records the nodes to expand beyond initial display level.
+  void expandNode(TreeNode<D> node) {
+    if (node.hasChildren) {
+      // Collapse rings up to the clicked expanded node.
+      if (node.children.any((e) => _nodeToExpand.contains(e))) {
+        node.visit((e) {
+          if (node != e) {
+            _nodeToExpand.remove(e);
+          }
+        });
+      } else {
+        // Expand clicked node by one level.
+        _nodeToExpand.add(node);
+        _nodeToExpand.addAll(node.children);
+      }
+    }
+  }
+
+  @override
+  List<AnimatedArcList<D>> getArcLists({String? seriesId}) {
+    if (seriesId == null) {
+      return _seriesArcMap.values.first;
+    }
+    final arcList = _seriesArcMap[seriesId];
+
+    if (arcList == null) return <AnimatedArcList<D>>[];
+    return arcList;
+  }
+
+  @override
+  void paint(ChartCanvas canvas, double animationPercent) {
+    // Clean up the arcs that no longer exist.
+    if (animationPercent == 1.0) {
+      final keysToRemove = <String>[];
+
+      _seriesArcMap.forEach((String key, List<AnimatedArcList<D>> arcLists) {
+        final arcListToRemove = <AnimatedArcList<D>>[];
+        for (var arcList in arcLists) {
+          arcList.arcs.removeWhere((AnimatedArc<D> arc) => arc.animatingOut);
+
+          if (arcList.arcs.isEmpty) {
+            arcListToRemove.add(arcList);
+          }
+        }
+
+        arcListToRemove.forEach(arcLists.remove);
+        if (arcLists.isEmpty) {
+          keysToRemove.add(key);
+        }
+      });
+
+      keysToRemove.forEach(_seriesArcMap.remove);
+    }
+
+    super.paint(canvas, animationPercent);
+  }
+
   @override
   void preprocessSeries(List<MutableSeries<D>> seriesList) {
     _nodeToArcRenderElementMap.clear();
     seriesList.forEach((MutableSeries<D> series) {
       var elements = <SunburstArcRendererElement<D>>[];
 
-      var domainFn = series.domainFn;
-      var measureFn = series.measureFn;
+      // var domainFn = series.domainFn;
+      // var measureFn = series.measureFn;
 
       // The seriesMeasureTotal needs to be computed from currently displayed
       // top level.
-      var seriesMeasureTotal = 0.0;
-      for (var i = 0; i < series.data.length; i++) {
-        final node = series.data[i] as TreeNode<Object>;
-        final measure = measureFn(i);
-        if (node.depth == 1 && measure != null) {
-          seriesMeasureTotal += measure;
-        }
-      }
+      // var seriesMeasureTotal = 0.0;
+      // for (var i = 0; i < series.data.length; i++) {
+      //   final node = series.data[i] as TreeNode<Object>;
+      //   final measure = measureFn(i);
+      //   if (node.depth == 1 && measure != null) {
+      //     seriesMeasureTotal += measure;
+      //   }
+      // }
 
       // On the canvas, arc measurements are defined as angles from the positive
       // x axis. Start our first slice at the positive y axis instead.
       var startAngle = config.startAngle;
       var arcLength = config.arcLength;
 
-      var totalAngle = 0.0;
+      // var totalAngle = 0.0;
 
-      var measures = <num>[];
+      // var measures = <num>[];
 
       // No data processing is same as the regular arc renderer.
       if (series.data.isEmpty) {
@@ -130,70 +245,6 @@ class SunburstArcRenderer<D> extends BaseArcRenderer<D> {
       series.setAttr(arcElementsKey, elements);
     });
   }
-
-  // Create SunburstArcRendererElement for children of the node.
-  List<SunburstArcRendererElement<D>> _createArcRenderElementForNode(
-      MutableSeries<D> series, TreeNode<D> node) {
-    var elements = <SunburstArcRendererElement<D>>[];
-    final children = node.children;
-    if (children.isNotEmpty) {
-      var childrenMeasureTotal = 0.0;
-
-      // Compute the measure total for the node's children.
-      for (var i = 0; i < children.length; i++) {
-        final child = children.elementAt(i);
-        final measure = series.measureFn(series.data.indexOf(child));
-        if (measure != null) {
-          childrenMeasureTotal += measure;
-        }
-      }
-
-      // Create ArcRenderElement for the node's children. Computing arc angles
-      // based on parent arc’s arcLength and the nodes measure versus the
-      // sibling nodes.
-      var startAngle = _getParentStartAngle(node);
-      for (var i = 0; i < children.length; i++) {
-        final child = children.elementAt(i);
-        final arcIndex = series.data.indexOf(child);
-        final measure = series.measureFn(arcIndex);
-        final domain = series.domainFn(arcIndex);
-        if (measure == null) {
-          continue;
-        }
-
-        final percentOfLevel =
-            childrenMeasureTotal > 0 ? measure / childrenMeasureTotal : 0;
-        var angle = _getParentArcLength(node) * percentOfLevel;
-        var endAngle = startAngle + angle;
-
-        var details = SunburstArcRendererElement<D>(
-            arcLength: angle,
-            startAngle: startAngle,
-            endAngle: endAngle,
-            index: arcIndex,
-            key: arcIndex,
-            domain: domain,
-            series: series);
-
-        _nodeToArcRenderElementMap[child] = details;
-        elements.add(details);
-
-        // Update the starting angle for the next datum in the series.
-        startAngle = endAngle;
-      }
-    }
-    return elements;
-  }
-
-  double _getParentArcLength(TreeNode<D> parent) =>
-      _nodeToArcRenderElementMap[parent]?.arcLength != null
-          ? _nodeToArcRenderElementMap[parent]!.arcLength!
-          : config.arcLength;
-
-  double _getParentStartAngle(TreeNode<D> parent) =>
-      _nodeToArcRenderElementMap[parent] != null
-          ? _nodeToArcRenderElementMap[parent]!.startAngle
-          : config.startAngle;
 
   @override
   void update(List<ImmutableSeries<D>> seriesList, bool isAnimatingThisDraw) {
@@ -395,118 +446,6 @@ class SunburstArcRenderer<D> extends BaseArcRenderer<D> {
     });
   }
 
-  @override
-  void paint(ChartCanvas canvas, double animationPercent) {
-    // Clean up the arcs that no longer exist.
-    if (animationPercent == 1.0) {
-      final keysToRemove = <String>[];
-
-      _seriesArcMap.forEach((String key, List<AnimatedArcList<D>> arcLists) {
-        final arcListToRemove = <AnimatedArcList<D>>[];
-        for (var arcList in arcLists) {
-          arcList.arcs.removeWhere((AnimatedArc<D> arc) => arc.animatingOut);
-
-          if (arcList.arcs.isEmpty) {
-            arcListToRemove.add(arcList);
-          }
-        }
-
-        arcListToRemove.forEach(arcLists.remove);
-        if (arcLists.isEmpty) {
-          keysToRemove.add(key);
-        }
-      });
-
-      keysToRemove.forEach(_seriesArcMap.remove);
-    }
-
-    super.paint(canvas, animationPercent);
-  }
-
-  bool _isNodeDisplayed(TreeNode<D>? node) {
-    return node != null &&
-        (node.depth <= config.initialDisplayLevel ||
-            _nodeToExpand.contains(node));
-  }
-
-  // Records the nodes to expand beyond initial display level.
-  void expandNode(TreeNode<D> node) {
-    if (node == null) {
-      _nodeToExpand.clear();
-    } else if (node.hasChildren) {
-      // Collapse rings up to the clicked expanded node.
-      if (node.children.any((e) => _nodeToExpand.contains(e))) {
-        node.visit((e) {
-          if (node != e) {
-            _nodeToExpand.remove(e);
-          }
-        });
-      } else {
-        // Expand clicked node by one level.
-        _nodeToExpand.add(node);
-        _nodeToExpand.addAll(node.children);
-      }
-    }
-  }
-
-  /// Assigns one color pallet for each subtree from the children of the root
-  /// node, and one shade for each node of the subtree to series that are
-  /// missing their colorFn.
-  @override
-  void assignMissingColors(Iterable<MutableSeries<D>> seriesList,
-      {required bool emptyCategoryUsesSinglePalette}) {
-    seriesList.forEach((series) {
-      if (series.colorFn == null) {
-        final root = series.data.first as TreeNode<D>;
-        final firstLevelChildren = (series.data.first as TreeNode<D>).children;
-
-        // Create number of palettes based on the first level children of root.
-        final colorPalettes =
-            StyleFactory.style.getOrderedPalettes(root.children.length);
-        final nodeToColorMap = {};
-
-        // Create shades base on number of Nodes in the subtree
-        if (config.colorAssignmentStrategy ==
-            SunburstColorStrategy.newShadePerArc) {
-          for (var i = 0; i < firstLevelChildren.length; i++) {
-            var numOfNodeInSubTree = 0;
-            firstLevelChildren.elementAt(i).visit((node) {
-              numOfNodeInSubTree++;
-            });
-
-            final colorList = colorPalettes[i].makeShades(numOfNodeInSubTree);
-
-            // Fill in node to color map to be used in the colorFn
-            numOfNodeInSubTree = 0;
-            firstLevelChildren.elementAt(i).visit((node) {
-              nodeToColorMap[node] = colorList[numOfNodeInSubTree];
-              numOfNodeInSubTree++;
-            });
-          }
-        } else {
-          // Create number of shades based on the full depth of the tree instead
-          // of each subtree, so the shades of each branch looks more aligned
-          // at each level.
-          var depthOfTree = 0;
-          root.visit((node) {
-            depthOfTree = max(depthOfTree, node.depth);
-          });
-
-          for (var i = 0; i < firstLevelChildren.length; i++) {
-            final colorList = colorPalettes[i].makeShades(depthOfTree);
-
-            // Fill in node to color map to be used in the colorFn
-            firstLevelChildren.elementAt(i).visit((node) {
-              nodeToColorMap[node] = colorList[node.depth - 1];
-            });
-          }
-        }
-        series.colorFn ??=
-            (index) => nodeToColorMap[series.data[index!]] ?? Color.black;
-      }
-    });
-  }
-
   /// Calculate the inner and outer radius of the current level based on config.
   List<double> _calculateRadii(double radius,
       [int maxDisplayLevel = 1, int currentLevel = 1]) {
@@ -571,15 +510,58 @@ class SunburstArcRenderer<D> extends BaseArcRenderer<D> {
     }
   }
 
-  @override
-  List<AnimatedArcList<D>> getArcLists({String? seriesId}) {
-    if (seriesId == null) {
-      return _seriesArcMap.values.first;
-    }
-    final arcList = _seriesArcMap[seriesId];
+  // Create SunburstArcRendererElement for children of the node.
+  List<SunburstArcRendererElement<D>> _createArcRenderElementForNode(
+      MutableSeries<D> series, TreeNode<D> node) {
+    var elements = <SunburstArcRendererElement<D>>[];
+    final children = node.children;
+    if (children.isNotEmpty) {
+      var childrenMeasureTotal = 0.0;
 
-    if (arcList == null) return <AnimatedArcList<D>>[];
-    return arcList;
+      // Compute the measure total for the node's children.
+      for (var i = 0; i < children.length; i++) {
+        final child = children.elementAt(i);
+        final measure = series.measureFn(series.data.indexOf(child));
+        if (measure != null) {
+          childrenMeasureTotal += measure;
+        }
+      }
+
+      // Create ArcRenderElement for the node's children. Computing arc angles
+      // based on parent arc’s arcLength and the nodes measure versus the
+      // sibling nodes.
+      var startAngle = _getParentStartAngle(node);
+      for (var i = 0; i < children.length; i++) {
+        final child = children.elementAt(i);
+        final arcIndex = series.data.indexOf(child);
+        final measure = series.measureFn(arcIndex);
+        final domain = series.domainFn(arcIndex);
+        if (measure == null) {
+          continue;
+        }
+
+        final percentOfLevel =
+            childrenMeasureTotal > 0 ? measure / childrenMeasureTotal : 0;
+        var angle = _getParentArcLength(node) * percentOfLevel;
+        var endAngle = startAngle + angle;
+
+        var details = SunburstArcRendererElement<D>(
+            arcLength: angle,
+            startAngle: startAngle,
+            endAngle: endAngle,
+            index: arcIndex,
+            key: arcIndex,
+            domain: domain,
+            series: series);
+
+        _nodeToArcRenderElementMap[child] = details;
+        elements.add(details);
+
+        // Update the starting angle for the next datum in the series.
+        startAngle = endAngle;
+      }
+    }
+    return elements;
   }
 
   List<int> _ensureConfigLengthCoversMaxDisplayLevel(
@@ -597,6 +579,22 @@ class SunburstArcRenderer<D> extends BaseArcRenderer<D> {
     }
     return arcWidths;
   }
+
+  double _getParentArcLength(TreeNode<D> parent) =>
+      _nodeToArcRenderElementMap[parent]?.arcLength != null
+          ? _nodeToArcRenderElementMap[parent]!.arcLength!
+          : config.arcLength;
+
+  double _getParentStartAngle(TreeNode<D> parent) =>
+      _nodeToArcRenderElementMap[parent] != null
+          ? _nodeToArcRenderElementMap[parent]!.startAngle
+          : config.startAngle;
+
+  // bool _isNodeDisplayed(TreeNode<D>? node) {
+  //   return node != null &&
+  //       (node.depth <= config.initialDisplayLevel ||
+  //           _nodeToExpand.contains(node));
+  // }
 }
 
 class SunburstArcRendererElement<D> extends ArcRendererElement<D> {
